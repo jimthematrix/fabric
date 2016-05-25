@@ -23,9 +23,12 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"os/signal"
+	"log"
 
 	"github.com/hyperledger/fabric/events/consumer"
 	pb "github.com/hyperledger/fabric/protos"
+	"github.com/Shopify/sarama"
 )
 
 type adapter struct {
@@ -83,6 +86,25 @@ func main() {
 		return
 	}
 
+	producer, err := sarama.NewAsyncProducer([]string{"192.168.99.100:9092"}, nil)
+	if err != nil {
+	    panic(err)
+	}
+
+	defer func() {
+	    if err := producer.Close(); err != nil {
+	        log.Fatalln(err)
+	    }
+	}()
+
+	// Trap SIGINT to trigger a shutdown.
+	signals := make(chan os.Signal, 1)
+	signal.Notify(signals, os.Interrupt)
+
+	var enqueued, errors int
+	var message sarama.StringEncoder
+
+	ProducerLoop:
 	for {
 		b := <-a.notfy
 		if b.Block.NonHashData.TransactionResults == nil {
@@ -93,10 +115,24 @@ func main() {
 			for _, r := range b.Block.NonHashData.TransactionResults {
 				if r.ErrorCode != 0 {
 					fmt.Printf("Err Transaction:\n\t[%v]\n", r)
+					message = sarama.StringEncoder(r.Error)
 				} else {
 					fmt.Printf("Success Transaction:\n\t[%v]\n", r)
+					message = sarama.StringEncoder(r.Uuid)
 				}
+
+			    select {
+			    case producer.Input() <- &sarama.ProducerMessage{Topic: "hl", Key: nil, Value: message}:
+			        enqueued++
+			    case err := <-producer.Errors():
+			        log.Println("Failed to produce message", err)
+			        errors++
+			    case <-signals:
+			        break ProducerLoop
+			    }
 			}
 		}
 	}
+
+	log.Printf("Enqueued: %d; errors: %d\n", enqueued, errors)
 }
