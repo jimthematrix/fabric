@@ -74,8 +74,9 @@ func createEventClient(eventAddress string) *adapter {
 }
 
 func main() {
-	var eventAddress string
+	var eventAddress, kafkaBrokers string
 	flag.StringVar(&eventAddress, "events-address", "0.0.0.0:31315", "address of events server")
+	flag.StringVar(&kafkaBrokers, "kafka-brokers", "", "address of kafka broker(s)")
 	flag.Parse()
 
 	fmt.Printf("Event Address: %s\n", eventAddress)
@@ -86,20 +87,28 @@ func main() {
 		return
 	}
 
-	producer, err := sarama.NewAsyncProducer([]string{"192.168.99.100:9092"}, nil)
-	if err != nil {
-	    panic(err)
+	var producer sarama.AsyncProducer
+	var signals chan os.Signal
+
+	if len(kafkaBrokers) > 0 {
+		fmt.Printf("Kafka broker list: %s\n", kafkaBrokers)
+
+		var err error
+		producer, err = sarama.NewAsyncProducer([]string{kafkaBrokers}, nil)
+		if err != nil {
+		    panic(err)
+		}
+
+		defer func() {
+		    if err := producer.Close(); err != nil {
+		        log.Fatalln(err)
+		    }
+		}()
+	
+		// Trap SIGINT to trigger a shutdown.
+		signals := make(chan os.Signal, 1)
+		signal.Notify(signals, os.Interrupt)
 	}
-
-	defer func() {
-	    if err := producer.Close(); err != nil {
-	        log.Fatalln(err)
-	    }
-	}()
-
-	// Trap SIGINT to trigger a shutdown.
-	signals := make(chan os.Signal, 1)
-	signal.Notify(signals, os.Interrupt)
 
 	var enqueued, errors int
 	var message sarama.StringEncoder
@@ -121,15 +130,17 @@ func main() {
 					message = sarama.StringEncoder(r.Uuid)
 				}
 
-			    select {
-			    case producer.Input() <- &sarama.ProducerMessage{Topic: "hl", Key: nil, Value: message}:
-			        enqueued++
-			    case err := <-producer.Errors():
-			        log.Println("Failed to produce message", err)
-			        errors++
-			    case <-signals:
-			        break ProducerLoop
-			    }
+				if len(kafkaBrokers) > 0 {
+				    select {
+				    case producer.Input() <- &sarama.ProducerMessage{Topic: "hl", Key: nil, Value: message}:
+				        enqueued++
+				    case err := <-producer.Errors():
+				        log.Println("Failed to produce message", err)
+				        errors++
+				    case <-signals:
+				        break ProducerLoop
+				    }
+				}
 			}
 		}
 	}
