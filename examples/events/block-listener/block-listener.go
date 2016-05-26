@@ -74,9 +74,10 @@ func createEventClient(eventAddress string) *adapter {
 }
 
 func main() {
-	var eventAddress, kafkaBrokers string
+	var eventAddress, kafkaBrokers, kafkaTopic string
 	flag.StringVar(&eventAddress, "events-address", "0.0.0.0:31315", "address of events server")
-	flag.StringVar(&kafkaBrokers, "kafka-brokers", "", "address of kafka broker(s)")
+	flag.StringVar(&kafkaBrokers, "kafka-brokers", "", "address of Kafka broker(s)")
+	flag.StringVar(&kafkaTopic, "kafka-topic", "hl", "Kafka topic to deliver event messages into")
 	flag.Parse()
 
 	fmt.Printf("Event Address: %s\n", eventAddress)
@@ -132,7 +133,7 @@ func main() {
 
 				if len(kafkaBrokers) > 0 {
 				    select {
-				    case producer.Input() <- &sarama.ProducerMessage{Topic: "hl", Key: nil, Value: message}:
+				    case producer.Input() <- &sarama.ProducerMessage{Topic: kafkaTopic, Key: nil, Value: message}:
 				        enqueued++
 				    case err := <-producer.Errors():
 				        log.Println("Failed to produce message", err)
