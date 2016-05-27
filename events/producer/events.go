@@ -21,8 +21,10 @@ import (
 	"fmt"
 	"sync"
 	"time"
+	"log"
 
 	pb "github.com/hyperledger/fabric/protos"
+	"github.com/Shopify/sarama"
 )
 
 //---- event hub framework ----
@@ -64,6 +66,31 @@ var gEventProcessor *eventProcessor
 
 func (ep *eventProcessor) start() {
 	producerLogger.Info("event processor started")
+	
+	var producer sarama.AsyncProducer
+
+	kafkaBrokers := "192.168.99.100:9092"
+	kafkaTopic := "hlevents"
+
+	if len(kafkaBrokers) > 0 {
+		fmt.Printf("Kafka broker list: %s\n", kafkaBrokers)
+
+		var err error
+		producer, err = sarama.NewAsyncProducer([]string{kafkaBrokers}, nil)
+		if err != nil {
+		    panic(err)
+		}
+
+		defer func() {
+		    if err := producer.Close(); err != nil {
+		        log.Fatalln(err)
+		    }
+		}()
+	}
+
+	var enqueued, errors int
+	// var message sarama.StringEncoder
+
 	for {
 		//wait for event
 		e := <-ep.eventChannel
@@ -96,6 +123,16 @@ func (ep *eventProcessor) start() {
 				}
 				if e.Event != nil {
 					h.SendMessage(e)
+
+					if len(kafkaBrokers) > 0 {
+					    select {
+					    case producer.Input() <- &sarama.ProducerMessage{Topic: kafkaTopic, Key: nil, Value: sarama.StringEncoder("Successful transaction")}:
+					        enqueued++
+					    case err := <-producer.Errors():
+					        log.Println("Failed to produce message", err)
+					        errors++
+					    }
+					}
 				}
 			}
 		}
