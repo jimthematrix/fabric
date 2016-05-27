@@ -245,12 +245,18 @@ func main() {
 
 	flags.BoolVarP(&chaincodeDevMode, "peer-chaincodedev", "", false, "Whether peer in chaincode development mode")
 
+	flags.String("kafka-brokers", "", "address of Kafka broker(s)")
+	flags.String("kafka-topic", "hl", "Kafka topic to deliver event messages into")
+
 	viper.BindPFlag("peer_tls_enabled", flags.Lookup("peer-tls-enabled"))
 	viper.BindPFlag("peer_tls_cert_file", flags.Lookup("peer-tls-cert-file"))
 	viper.BindPFlag("peer_tls_key_file", flags.Lookup("peer-tls-key-file"))
 	viper.BindPFlag("peer_port", flags.Lookup("peer-port"))
 	viper.BindPFlag("peer_gomaxprocs", flags.Lookup("peer-gomaxprocs"))
 	viper.BindPFlag("peer_discovery_enabled", flags.Lookup("peer-discovery-enabled"))
+
+	viper.BindPFlag("kafka-brokers", flags.Lookup("kafka-brokers"))
+	viper.BindPFlag("kafka-topic", flags.Lookup("kafka-topic"))
 
 	// Now set the configuration file.
 	viper.SetConfigName(cmdRoot) // Name of config file (without extension)

@@ -24,6 +24,7 @@ import (
 	"log"
 
 	pb "github.com/hyperledger/fabric/protos"
+	"github.com/spf13/viper"
 	"github.com/Shopify/sarama"
 )
 
@@ -66,11 +67,11 @@ var gEventProcessor *eventProcessor
 
 func (ep *eventProcessor) start() {
 	producerLogger.Info("event processor started")
-	
+
 	var producer sarama.AsyncProducer
 
-	kafkaBrokers := "192.168.99.100:9092"
-	kafkaTopic := "hlevents"
+	kafkaBrokers := viper.GetString("kafka-brokers")
+	kafkaTopic := viper.GetString("kafka-topic")
 
 	if len(kafkaBrokers) > 0 {
 		fmt.Printf("Kafka broker list: %s\n", kafkaBrokers)
@@ -123,19 +124,20 @@ func (ep *eventProcessor) start() {
 				}
 				if e.Event != nil {
 					h.SendMessage(e)
-
-					if len(kafkaBrokers) > 0 {
-					    select {
-					    case producer.Input() <- &sarama.ProducerMessage{Topic: kafkaTopic, Key: nil, Value: sarama.StringEncoder("Successful transaction")}:
-					        enqueued++
-					    case err := <-producer.Errors():
-					        log.Println("Failed to produce message", err)
-					        errors++
-					    }
-					}
 				}
 			}
 		}
+
+		if len(kafkaBrokers) > 0 {
+		    select {
+		    case producer.Input() <- &sarama.ProducerMessage{Topic: kafkaTopic, Key: nil, Value: sarama.StringEncoder("Successful transaction")}:
+		        enqueued++
+		    case err := <-producer.Errors():
+		        log.Println("Failed to produce message", err)
+		        errors++
+		    }
+		}
+
 		hl.Unlock()
 	}
 }
