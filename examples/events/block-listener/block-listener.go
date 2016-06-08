@@ -26,7 +26,7 @@ import (
 
 	"github.com/hyperledger/fabric/events/consumer"
 	pb "github.com/hyperledger/fabric/protos"
-	"github.com/hyperledger/gomq/lib"
+	"github.com/hyperledger/fabric/examples/events/block-listener/lib"
 )
 
 type adapter struct {
