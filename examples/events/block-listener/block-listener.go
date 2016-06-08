@@ -74,8 +74,8 @@ func createEventClient(eventAddress string) *adapter {
 func main() {
 	var eventAddress, qmgrName, qName string
 	flag.StringVar(&eventAddress, "events-address", "0.0.0.0:31315", "address of events server")
-	flag.StringVar(&eventAddress, "queue-manager", "", "Queue Manager name for the target queue in WebSphere MQ")
-	flag.StringVar(&eventAddress, "queue", "QUEUE1", "Target Queue name to put events in WebSphere MQ. Default: QUEUE1")
+	flag.StringVar(&qmgrName, "queue-manager", "", "Queue Manager name for the target queue in WebSphere MQ")
+	flag.StringVar(&qName, "queue", "QUEUE1", "Target Queue name to put events in WebSphere MQ. Default: QUEUE1")
 	flag.Parse()
 
 	fmt.Printf("Event Address: %s\n", eventAddress)
