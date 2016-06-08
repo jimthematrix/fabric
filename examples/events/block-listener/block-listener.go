@@ -26,6 +26,7 @@ import (
 
 	"github.com/hyperledger/fabric/events/consumer"
 	pb "github.com/hyperledger/fabric/protos"
+	"github.com/hyperledger/gomq/lib"
 )
 
 type adapter struct {
@@ -71,8 +72,10 @@ func createEventClient(eventAddress string) *adapter {
 }
 
 func main() {
-	var eventAddress string
+	var eventAddress, qmgrName, qName string
 	flag.StringVar(&eventAddress, "events-address", "0.0.0.0:31315", "address of events server")
+	flag.StringVar(&eventAddress, "queue-manager", "", "Queue Manager name for the target queue in WebSphere MQ")
+	flag.StringVar(&eventAddress, "queue", "QUEUE1", "Target Queue name to put events in WebSphere MQ. Default: QUEUE1")
 	flag.Parse()
 
 	fmt.Printf("Event Address: %s\n", eventAddress)
@@ -81,6 +84,27 @@ func main() {
 	if a == nil {
 		fmt.Printf("Error creating event client\n")
 		return
+	}
+
+	var qManager lib.MQ
+	var queue lib.MQQueue
+	var activeQueue bool
+
+	if len(qmgrName) > 0 {
+		err := qManager.Connect(qmgrName)
+		if err != nil {
+			fmt.Printf("Failed to connect to MQ queue manager. %v\n", err)
+		} else {
+			fmt.Printf("Connection successfully established\n")
+
+			queue, err = qManager.Open(qName)
+			if err != nil {
+				fmt.Printf("Failed to open queue %v\n", qName)
+			} else {
+				activeQueue = true
+				defer queue.Close()
+			}
+		}
 	}
 
 	for {
@@ -95,6 +119,10 @@ func main() {
 					fmt.Printf("Err Transaction:\n\t[%v]\n", r)
 				} else {
 					fmt.Printf("Success Transaction:\n\t[%v]\n", r)
+				}
+
+				if activeQueue {
+					queue.Put(fmt.Sprintf("Transaction result: %v", r))
 				}
 			}
 		}
