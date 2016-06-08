@@ -38,10 +38,10 @@ import (
 
 	core "github.com/hyperledger/fabric/core"
 	"github.com/hyperledger/fabric/core/chaincode"
+	"github.com/hyperledger/fabric/core/comm"
 	"github.com/hyperledger/fabric/core/crypto"
-	"github.com/hyperledger/fabric/core/crypto/utils"
-	"github.com/hyperledger/fabric/core/peer"
 	pb "github.com/hyperledger/fabric/protos"
+	"github.com/hyperledger/fabric/core/crypto/primitives"
 )
 
 var restLogger = logging.MustGetLogger("rest")
@@ -427,7 +427,7 @@ func (s *ServerOpenchainREST) GetEnrollmentCert(rw web.ResponseWriter, req *web.
 		}
 
 		// Transforms the DER encoded certificate to a PEM encoded certificate
-		certPEM := utils.DERCertToPEM(certDER)
+		certPEM := primitives.DERCertToPEM(certDER)
 
 		// As the enrollment certificate contains \n characters, url encode it before outputting
 		urlEncodedCert := url.QueryEscape(string(certPEM))
@@ -549,7 +549,7 @@ func (s *ServerOpenchainREST) GetTransactionCert(rw web.ResponseWriter, req *web
 			}
 
 			// Transforms the DER encoded certificate to a PEM encoded certificate
-			certPEM := utils.DERCertToPEM(certDER)
+			certPEM := primitives.DERCertToPEM(certDER)
 
 			// As the transaction certificate contains \n characters, url encode it before outputting
 			urlEncodedCert := url.QueryEscape(string(certPEM))
@@ -669,6 +669,9 @@ func (s *ServerOpenchainREST) GetTransactionByUUID(rw web.ResponseWriter, req *w
 // blockchain.
 func (s *ServerOpenchainREST) Deploy(rw web.ResponseWriter, req *web.Request) {
 	restLogger.Info("REST deploying chaincode...")
+
+	// This endpoint has been deprecated. Add a warning header to all responses.
+	rw.Header().Set("Warning", "299 - /devops/deploy endpoint has been deprecated. Use /chaincode endpoint instead.")
 
 	// Decode the incoming JSON payload
 	var spec pb.ChaincodeSpec
@@ -813,6 +816,9 @@ func (s *ServerOpenchainREST) Deploy(rw web.ResponseWriter, req *web.Request) {
 func (s *ServerOpenchainREST) Invoke(rw web.ResponseWriter, req *web.Request) {
 	restLogger.Info("REST invoking chaincode...")
 
+	// This endpoint has been deprecated. Add a warning header to all responses.
+	rw.Header().Set("Warning", "299 - /devops/invoke endpoint has been deprecated. Use /chaincode endpoint instead.")
+
 	// Decode the incoming JSON payload
 	var spec pb.ChaincodeInvocationSpec
 	err := jsonpb.Unmarshal(req.Body, &spec)
@@ -949,6 +955,9 @@ func (s *ServerOpenchainREST) Invoke(rw web.ResponseWriter, req *web.Request) {
 // Query performs the requested query on the target Chaincode.
 func (s *ServerOpenchainREST) Query(rw web.ResponseWriter, req *web.Request) {
 	restLogger.Info("REST querying chaincode...")
+
+	// This endpoint has been deprecated. Add a warning header to all responses.
+	rw.Header().Set("Warning", "299 - /devops/query endpoint has been deprecated. Use /chaincode endpoint instead.")
 
 	// Decode the incoming JSON payload
 	var spec pb.ChaincodeInvocationSpec
@@ -1458,7 +1467,7 @@ func (s *ServerOpenchainREST) processChaincodeDeploy(spec *pb.ChaincodeSpec) rpc
 	}
 
 	//
-	// Deployment succeded
+	// Deployment succeeded
 	//
 
 	// Clients will need the chaincode name in order to invoke or query it, record it
@@ -1594,7 +1603,7 @@ func (s *ServerOpenchainREST) processChaincodeInvokeOrQuery(method string, spec 
 		}
 
 		//
-		// Invocation succeded
+		// Invocation succeeded
 		//
 
 		// Clients will need the txuuid in order to track it after invocation, record it
@@ -1633,7 +1642,7 @@ func (s *ServerOpenchainREST) processChaincodeInvokeOrQuery(method string, spec 
 		}
 
 		//
-		// Query succeded
+		// Query succeeded
 		//
 
 		// Clients will need the returned value, record it
@@ -1699,7 +1708,7 @@ func (s *ServerOpenchainREST) NotFound(rw web.ResponseWriter, r *web.Request) {
 // middleware and routes.
 func StartOpenchainRESTServer(server *ServerOpenchain, devops *core.Devops) {
 	// Initialize the REST service object
-	restLogger.Info("Initializing the REST service on %s, TLS is %s.", viper.GetString("rest.address"), (map[bool]string{true: "enabled", false: "disabled"})[peer.TlsEnabled()])
+	restLogger.Info("Initializing the REST service on %s, TLS is %s.", viper.GetString("rest.address"), (map[bool]string{true: "enabled", false: "disabled"})[comm.TLSEnabled()])
 	router := web.New(ServerOpenchainREST{})
 
 	// Record the pointer to the underlying ServerOpenchain and Devops objects.
@@ -1720,7 +1729,7 @@ func StartOpenchainRESTServer(server *ServerOpenchain, devops *core.Devops) {
 	router.Get("/chain", (*ServerOpenchainREST).GetBlockchainInfo)
 	router.Get("/chain/blocks/:id", (*ServerOpenchainREST).GetBlockByNumber)
 
-	// The /devops endpoint is now considered deprecated and superceeded by the /chaincode endpoint
+	// The /devops endpoint is now considered deprecated and superseded by the /chaincode endpoint
 	router.Post("/devops/deploy", (*ServerOpenchainREST).Deploy)
 	router.Post("/devops/invoke", (*ServerOpenchainREST).Invoke)
 	router.Post("/devops/query", (*ServerOpenchainREST).Query)
@@ -1736,7 +1745,7 @@ func StartOpenchainRESTServer(server *ServerOpenchain, devops *core.Devops) {
 	router.NotFound((*ServerOpenchainREST).NotFound)
 
 	// Start server
-	if peer.TlsEnabled() {
+	if comm.TLSEnabled() {
 		err := http.ListenAndServeTLS(viper.GetString("rest.address"), viper.GetString("peer.tls.cert.file"), viper.GetString("peer.tls.key.file"), router)
 		if err != nil {
 			restLogger.Error(fmt.Sprintf("ListenAndServeTLS: %s", err))
