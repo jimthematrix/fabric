@@ -21,11 +21,10 @@ import (
 	"fmt"
 	"sync"
 	"time"
-	"log"
 
 	pb "github.com/hyperledger/fabric/protos"
 	"github.com/spf13/viper"
-	"github.com/Shopify/sarama"
+	"github.com/hyperledger/fabric/events/producer/connectors"
 )
 
 //---- event hub framework ----
@@ -40,6 +39,13 @@ import (
 type handlerList struct {
 	sync.RWMutex
 	handlers map[*handler]bool
+}
+
+type Connector interface {
+	SystemName() string
+	Initialize() error
+	Publish(msg *pb.Event) error
+	Close() error
 }
 
 //eventProcessor has a map of event type to handlers interested in that
@@ -65,32 +71,35 @@ type eventProcessor struct {
 //send events simply over a reentrant static method
 var gEventProcessor *eventProcessor
 
+var externalConnectors []Connector
+
 func (ep *eventProcessor) start() {
 	producerLogger.Info("event processor started")
 
-	var producer sarama.AsyncProducer
+	var connector Connector
 
-	kafkaBrokers := viper.GetString("kafka-brokers")
-	kafkaTopic := viper.GetString("kafka-topic")
+	eventsSystem := viper.GetString("events-queue")
 
-	if len(kafkaBrokers) > 0 {
-		fmt.Printf("Kafka broker list: %s\n", kafkaBrokers)
+	if eventsSystem != "" {
+		for _, c := range externalConnectors {
+			if eventsSystem == c.SystemName() {
+				connector = c
+				err1 := connector.Initialize()
 
-		var err error
-		producer, err = sarama.NewAsyncProducer([]string{kafkaBrokers}, nil)
-		if err != nil {
-		    panic(err)
+				if err1 != nil {
+					producerLogger.Error(fmt.Sprintf("Failed to initialize events queue connector: %v. %v", eventsSystem, err1))
+				} else {
+					defer func() {
+						if err2 := connector.Close(); err2 != nil {
+							producerLogger.Error(fmt.Sprintf("Failed to close events queue connector: %v. %v", eventsSystem, err2))
+						}
+					}()
+				}
+
+				break
+			}
 		}
-
-		defer func() {
-		    if err := producer.Close(); err != nil {
-		        log.Fatalln(err)
-		    }
-		}()
 	}
-
-	var enqueued, errors int
-	// var message sarama.StringEncoder
 
 	for {
 		//wait for event
@@ -128,14 +137,8 @@ func (ep *eventProcessor) start() {
 			}
 		}
 
-		if len(kafkaBrokers) > 0 {
-		    select {
-		    case producer.Input() <- &sarama.ProducerMessage{Topic: kafkaTopic, Key: nil, Value: sarama.StringEncoder("Successful transaction")}:
-		        enqueued++
-		    case err := <-producer.Errors():
-		        log.Println("Failed to produce message", err)
-		        errors++
-		    }
+		if connector != nil {
+			connector.Publish(e)
 		}
 
 		hl.Unlock()
@@ -151,6 +154,8 @@ func initializeEvents(bufferSize uint, tout int) {
 	gEventProcessor = &eventProcessor{eventConsumers: make(map[string]*handlerList), eventChannel: make(chan *pb.Event, bufferSize), timeout: tout}
 
 	addInternalEventTypes()
+
+	externalConnectors = []Connector{ new(connectors.KafkaConnector), new(connectors.WMQConnector) }
 
 	//start the event processor
 	go gEventProcessor.start()
