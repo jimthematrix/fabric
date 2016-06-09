@@ -92,6 +92,8 @@ func (ep *eventProcessor) start() {
 					defer func() {
 						if err2 := connector.Close(); err2 != nil {
 							producerLogger.Error(fmt.Sprintf("Failed to close events queue connector: %v. %v", eventsSystem, err2))
+						} else {
+							producerLogger.Info("Successfully close connection with %v", eventsSystem)
 						}
 					}()
 				}
