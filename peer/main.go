@@ -250,6 +250,8 @@ func main() {
 
 	flags.String("kafka-brokers", "", "address of Kafka broker(s)")
 	flags.String("kafka-topic", "hl", "Kafka topic to deliver event messages into")
+	flags.String("queue-manager", "", "Queue Manager name for the target queue in WebSphere MQ")
+	flags.String("queue", "QUEUE1", "Target Queue name to put events in WebSphere MQ. Default: QUEUE1")
 
 	viper.BindPFlag("peer_tls_enabled", flags.Lookup("peer-tls-enabled"))
 	viper.BindPFlag("peer_tls_cert_file", flags.Lookup("peer-tls-cert-file"))
@@ -261,6 +263,8 @@ func main() {
 
 	viper.BindPFlag("kafka-brokers", flags.Lookup("kafka-brokers"))
 	viper.BindPFlag("kafka-topic", flags.Lookup("kafka-topic"))
+	viper.BindPFlag("queue-manager", flags.Lookup("queue-manager"))
+	viper.BindPFlag("queue", flags.Lookup("queue"))
 
 	// Now set the configuration file.
 	viper.SetConfigName(cmdRoot) // Name of config file (without extension)
