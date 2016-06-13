@@ -262,7 +262,7 @@ func (ep *eventProcessor) start() {
 		eType := getMessageType(e)
 		ep.Lock()
 		if hl, _ = ep.eventConsumers[eType]; hl == nil {
-			producerLogger.Error(fmt.Sprintf("Event of type %s does not exist", eType))
+			producerLogger.Errorf("Event of type %s does not exist", eType)
 			ep.Unlock()
 			continue
 		}
@@ -300,7 +300,7 @@ func initializeEvents(bufferSize uint, tout int) {
 //AddEventType supported event
 func AddEventType(eventType pb.EventType) error {
 	gEventProcessor.Lock()
-	producerLogger.Debug("registering %s", pb.EventType_name[int32(eventType)])
+	producerLogger.Debugf("registering %s", pb.EventType_name[int32(eventType)])
 	if _, ok := gEventProcessor.eventConsumers[eventType]; ok {
 		gEventProcessor.Unlock()
 		return fmt.Errorf("event type exists %s", pb.EventType_name[int32(eventType)])
@@ -318,7 +318,7 @@ func AddEventType(eventType pb.EventType) error {
 }
 
 func registerHandler(ie *pb.Interest, h *handler) error {
-	producerLogger.Debug("registerHandler %s", ie.EventType)
+	producerLogger.Debugf("registerHandler %s", ie.EventType)
 
 	gEventProcessor.Lock()
 	defer gEventProcessor.Unlock()
@@ -332,7 +332,7 @@ func registerHandler(ie *pb.Interest, h *handler) error {
 }
 
 func deRegisterHandler(ie *pb.Interest, h *handler) error {
-	producerLogger.Debug("deRegisterHandler %s", ie.EventType)
+	producerLogger.Debugf("deRegisterHandler %s", ie.EventType)
 
 	gEventProcessor.Lock()
 	defer gEventProcessor.Unlock()
