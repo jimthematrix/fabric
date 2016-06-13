@@ -273,11 +273,11 @@ func (ep *eventProcessor) start() {
 			if e.Event != nil {
 				h.SendMessage(e)
 			}
-			
-			if connector != nil {
-				connector.Publish(e)
-			}
 		})
+			
+		if connector != nil {
+			connector.Publish(e)
+		}
 	}
 }
 
