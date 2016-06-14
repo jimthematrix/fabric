@@ -1,4 +1,4 @@
-package connectors
+package producer
 
 import (
 	"fmt"
@@ -12,6 +12,10 @@ import (
 
 type KafkaConnector struct {
 	Producer sarama.AsyncProducer
+}
+
+func init() {
+	ExternalConnectors.AddConnectorImpl(new(KafkaConnector))
 }
 
 func (c *KafkaConnector) SystemName() string {

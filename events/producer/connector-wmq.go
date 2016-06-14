@@ -1,4 +1,4 @@
-package connectors
+package producer
 
 import (
 	"fmt"
@@ -7,12 +7,16 @@ import (
 	pb "github.com/hyperledger/fabric/protos"
 
 	"github.com/spf13/viper"
-	"github.com/hyperledger/fabric/events/producer/connectors/lib"
+	"github.com/hyperledger/fabric/events/producer/lib"
 )
 
 type WMQConnector struct {
 	Queue lib.MQQueue
 	ActiveQueue bool
+}
+
+func init() {
+	ExternalConnectors.AddConnectorImpl(new(WMQConnector))
 }
 
 func (c *WMQConnector) SystemName() string {

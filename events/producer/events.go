@@ -23,7 +23,6 @@ import (
 
 	pb "github.com/hyperledger/fabric/protos"
 	"github.com/spf13/viper"
-	"github.com/hyperledger/fabric/events/producer/connectors"
 )
 
 //---- event hub framework ----
@@ -46,13 +45,6 @@ type genericHandlerList struct {
 	sync.RWMutex
 	// this map used as a list - add/del/iterate
 	handlers map[*handler]bool
-}
-
-type Connector interface {
-	SystemName() string
-	Initialize() error
-	Publish(msg *pb.Event) error
-	Close() error
 }
 
 type chaincodeHandlerList struct {
@@ -222,7 +214,29 @@ type eventProcessor struct {
 //send events simply over a reentrant static method
 var gEventProcessor *eventProcessor
 
-var externalConnectors []Connector
+// the Connector interface implements behaviors for events to be published to an external
+// message queue (Apache Kafka, WebSphere MQ, etc.)
+type Connector interface {
+	SystemName() string
+	Initialize() error
+	Publish(msg *pb.Event) error
+	Close() error
+}
+
+type ConnectorsList struct {
+	sync.RWMutex
+	connectors []Connector
+}
+
+func (cl *ConnectorsList) AddConnectorImpl(c Connector) {
+	cl.Lock()
+
+	cl.connectors = append(cl.connectors, c)
+
+	cl.Unlock()
+}
+
+var ExternalConnectors ConnectorsList
 
 func (ep *eventProcessor) start() {
 	producerLogger.Info("event processor started")
@@ -232,7 +246,7 @@ func (ep *eventProcessor) start() {
 	eventsSystem := viper.GetString("events-queue")
 
 	if eventsSystem != "" {
-		for _, c := range externalConnectors {
+		for _, c := range ExternalConnectors.connectors {
 			if eventsSystem == c.SystemName() {
 				connector = c
 				err1 := connector.Initialize()
@@ -290,8 +304,6 @@ func initializeEvents(bufferSize uint, tout int) {
 	gEventProcessor = &eventProcessor{eventConsumers: make(map[pb.EventType]handlerList), eventChannel: make(chan *pb.Event, bufferSize), timeout: tout}
 
 	addInternalEventTypes()
-
-	externalConnectors = []Connector{ new(connectors.KafkaConnector), new(connectors.WMQConnector) }
 
 	//start the event processor
 	go gEventProcessor.start()

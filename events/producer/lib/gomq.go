@@ -1,7 +1,7 @@
 package lib
 
 // #cgo CFLAGS: -I.
-// #cgo LDFLAGS: -L/home/vagrant/mq-redist/lib64/ -lmqm
+// #cgo LDFLAGS: -lmqm
 // #include "cmqc.h"
 // #include <stdlib.h>
 import "C"

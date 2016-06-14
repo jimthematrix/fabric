@@ -1,4 +1,4 @@
-package connectors
+package producer
 
 import "github.com/op/go-logging"
 
