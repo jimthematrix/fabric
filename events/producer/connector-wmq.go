@@ -23,6 +23,10 @@ func (c *WMQConnector) SystemName() string {
 	return "wmq"
 }
 
+func (c *WMQConnector) RuntimeFlags() [][]string {
+	return [][]string{ {"queue-manager", "Queue Manager name for the target queue in WebSphere MQ"}, {"queue", "Target Queue name to put events in WebSphere MQ"} }
+}
+
 func (c *WMQConnector) Initialize() error {
 
 	qmgrName := viper.GetString("queue-manager")

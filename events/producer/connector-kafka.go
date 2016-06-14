@@ -22,6 +22,10 @@ func (c *KafkaConnector) SystemName() string {
 	return "kafka"
 }
 
+func (c *KafkaConnector) RuntimeFlags() [][]string {
+	return [][]string{ {"kafka-brokers", "Address of Kafka broker(s)"}, {"kafka-topic", "Kafka topic to deliver event messages into"} }
+}
+
 func (c *KafkaConnector) Initialize() error {
 	kafkaBrokers := viper.GetString("kafka-brokers")
 

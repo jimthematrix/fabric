@@ -40,6 +40,7 @@ import (
 	"github.com/op/go-logging"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
+	"github.com/spf13/pflag"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/grpclog"
@@ -247,20 +248,16 @@ func main() {
 
 	flags.BoolVarP(&chaincodeDevMode, "peer-chaincodedev", "", false, "Whether peer in chaincode development mode")
 
-	flags.String("events-queue", "", "Optional external events queue")
-
-	flags.String("kafka-brokers", "", "address of Kafka broker(s)")
-	flags.String("kafka-topic", "hl", "Kafka topic to deliver event messages into")
-	flags.String("queue-manager", "", "Queue Manager name for the target queue in WebSphere MQ")
-	flags.String("queue", "QUEUE1", "Target Queue name to put events in WebSphere MQ. Default: QUEUE1")
-
 	viper.BindPFlag("peer_tls_enabled", flags.Lookup("peer-tls-enabled"))
 	viper.BindPFlag("peer_tls_cert_file", flags.Lookup("peer-tls-cert-file"))
 	viper.BindPFlag("peer_tls_key_file", flags.Lookup("peer-tls-key-file"))
 	viper.BindPFlag("peer_gomaxprocs", flags.Lookup("peer-gomaxprocs"))
 	viper.BindPFlag("peer_discovery_enabled", flags.Lookup("peer-discovery-enabled"))
 
+	flags.String("events-queue", "", "Optional external events queue")
 	viper.BindPFlag("events-queue", flags.Lookup("events-queue"))
+
+	setupEventsQueueFlags(flags)
 
 	viper.BindPFlag("kafka-brokers", flags.Lookup("kafka-brokers"))
 	viper.BindPFlag("kafka-topic", flags.Lookup("kafka-topic"))
@@ -329,6 +326,20 @@ func main() {
 	// need to exit with a non-0 status
 	if mainCmd.Execute() != nil {
 		os.Exit(1)
+	}
+}
+
+func setupEventsQueueFlags(flags *pflag.FlagSet) {
+	connectors := producer.ExternalConnectors.GetConnectorImpls()
+	for _, ctr := range connectors {
+		rflags := ctr.RuntimeFlags()
+
+		if len(rflags) > 0 {
+			for _, rflag := range rflags {
+				flags.String(rflag[0], "", rflag[1])
+				viper.BindPFlag(rflag[0], flags.Lookup(rflag[0]))
+			}
+		}
 	}
 }
 

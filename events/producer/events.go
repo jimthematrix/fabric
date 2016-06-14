@@ -218,6 +218,7 @@ var gEventProcessor *eventProcessor
 // message queue (Apache Kafka, WebSphere MQ, etc.)
 type Connector interface {
 	SystemName() string
+	RuntimeFlags() [][]string
 	Initialize() error
 	Publish(msg *pb.Event) error
 	Close() error
@@ -234,6 +235,10 @@ func (cl *ConnectorsList) AddConnectorImpl(c Connector) {
 	cl.connectors = append(cl.connectors, c)
 
 	cl.Unlock()
+}
+
+func (cl *ConnectorsList) GetConnectorImpls() []Connector {
+	return cl.connectors
 }
 
 var ExternalConnectors ConnectorsList
