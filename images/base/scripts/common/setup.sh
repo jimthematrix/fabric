@@ -131,10 +131,15 @@ ldconfig
 cd ~/
 
 # Install MQ redistributable libs needed for MQ support in events producers
-mkdir mq-redist
-wget http://192.168.99.1:8000/8.0.0.4-WS-MQC-Redist-LinuxX64.tar.gz
-tar -xvf 8.0.0.4-WS-MQC-Redist-LinuxX64.tar.gz --directory mq-redist
-cp mq-redist/lib64/* /usr/local/lib/
+mkdir mqc
+wget http://192.168.99.1:8000/mqc8_8.0.0.4_linuxx86-64.tar.gz
+tar -xvf mqc8_8.0.0.4_linuxx86-64.tar.gz --directory mqc
+apt-get --assume-yes install rpm
+cd mqc
+rm MQSeriesMsg_*
+./mqlicense.sh -accept
+rpm -ivh *.rpm
+cp -r /opt/mqm/lib64/* /usr/local/lib/
 ldconfig
 
 # Make our versioning persistent
