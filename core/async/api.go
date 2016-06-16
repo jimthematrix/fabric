@@ -163,7 +163,7 @@ func ProcessChaincode(msgBody []byte) {
 		}
 
 		// Process the chaincode invoke/query request and record the result
-		//		err = s.processChaincodeInvokeOrQuery(*(requestPayload.Method), invokequeryPayload)
+		err = processChaincodeInvokeOrQuery(*(requestPayload.Method), invokequeryPayload)
 	}
 
 	// Make a clarification in the invoke response message, that the transaction has been successfully submitted but not completed
@@ -302,6 +302,150 @@ func processChaincodeDeploy(spec *pb.ChaincodeSpec) error {
 	//
 
 	logger.Infof("Successfully deployed chainCode: %s", chainID)
+
+	return nil
+}
+
+// processChaincodeInvokeOrQuery triggers chaincode invoke or query and returns a result or an error
+func processChaincodeInvokeOrQuery(method string, spec *pb.ChaincodeInvocationSpec) error {
+	logger.Infof("Async %s chaincode...", method)
+
+	// Check that the ChaincodeID is not nil.
+	if spec.ChaincodeSpec.ChaincodeID == nil {
+		// Format the error appropriately for further processing
+		logger.Error("Payload must contain a ChaincodeID.")
+
+		return errors.New("Payload must contain a ChaincodeID.")
+	}
+
+	// Check that the Chaincode name is not blank.
+	if spec.ChaincodeSpec.ChaincodeID.Name == "" {
+		logger.Error("Chaincode name may not be blank.")
+
+		return errors.New("Chaincode name may not be blank.")
+	}
+
+	// Check that the CtorMsg is not left blank.
+	if (spec.ChaincodeSpec.CtorMsg == nil) || (spec.ChaincodeSpec.CtorMsg.Function == "") {
+		logger.Error("Payload must contain a CtorMsg with a Chaincode function name.")
+
+		return errors.New("Payload must contain a CtorMsg with a Chaincode function name.")
+	}
+
+	//
+	// Check if security is enabled
+	//
+
+	if core.SecurityEnabled() {
+		// User registrationID must be present inside request payload with security enabled
+		chaincodeUsr := spec.ChaincodeSpec.SecureContext
+		if chaincodeUsr == "" {
+			logger.Error("Must supply username for chaincode when security is enabled.")
+
+			return errors.New("Must supply username for chaincode when security is enabled.")
+		}
+
+		// Retrieve the REST data storage path
+		// Returns /var/hyperledger/production/client/
+		localStore := getRESTFilePath()
+
+		// Check if the user is logged in before sending transaction
+		if _, err := os.Stat(localStore + "loginToken_" + chaincodeUsr); err == nil {
+			// No error returned, therefore token exists so user is already logged in
+			logger.Infof("Local user '%s' is already logged in. Retrieving login token.\n", chaincodeUsr)
+
+			// Read in the login token
+			token, err := ioutil.ReadFile(localStore + "loginToken_" + chaincodeUsr)
+			if err != nil {
+				logger.Errorf("Fatal error when reading client login token: %s", err)
+
+				return errors.New(fmt.Sprintf("Fatal error when reading client login token: %s", err))
+			}
+
+			// Add the login token to the chaincodeSpec
+			spec.ChaincodeSpec.SecureContext = string(token)
+
+			// If privacy is enabled, mark chaincode as confidential
+			if viper.GetBool("security.privacy") {
+				spec.ChaincodeSpec.ConfidentialityLevel = pb.ConfidentialityLevel_CONFIDENTIAL
+			}
+		} else {
+			// Check if the token is not there and fail
+			if os.IsNotExist(err) {
+				logger.Error("User not logged in. Use the '/registrar' endpoint to obtain a security token.")
+
+				return errors.New("User not logged in. Use the '/registrar' endpoint to obtain a security token.")
+			}
+			// Unexpected error
+			logger.Errorf("Unexpected fatal error when checking for client login token: %s", err)
+
+			return errors.New(fmt.Sprintf("Unexpected fatal error when checking for client login token: %s", err))
+		}
+	}
+
+	// Check the method that is being requested and execute either an invoke or a query
+	if method == "invoke" {
+
+		//
+		// Trigger the chaincode invoke through the devops service
+		//
+
+		resp, err := serverDevops.Invoke(context.Background(), spec)
+
+		//
+		// Invocation failed
+		//
+
+		if err != nil {
+			// Replace " characters with ' within the chaincode response
+			errVal := strings.Replace(err.Error(), "\"", "'", -1)
+
+			logger.Errorf("Error when invoking chaincode: %s", errVal)
+
+			return errors.New(fmt.Sprintf("Error when invoking chaincode: %s", errVal))
+		}
+
+		//
+		// Invocation succeeded
+		//
+
+		// Clients will need the txuuid in order to track it after invocation, record it
+		txuuid := string(resp.Msg)
+
+		// Make a clarification in the invoke response message, that the transaction has been successfully submitted but not completed
+		logger.Infof("Successfully submitted invoke transaction with txuuid (%s)", txuuid)
+	}
+
+	if method == "query" {
+
+		//
+		// Trigger the chaincode query through the devops service
+		//
+
+		resp, err := serverDevops.Query(context.Background(), spec)
+
+		//
+		// Query failed
+		//
+
+		if err != nil {
+			// Replace " characters with ' within the chaincode response
+			errVal := strings.Replace(err.Error(), "\"", "'", -1)
+
+			logger.Errorf("Error when querying chaincode: %s", errVal)
+
+			return errors.New(fmt.Sprintf("Error when querying chaincode: %s", errVal))
+		}
+
+		//
+		// Query succeeded
+		//
+
+		// Clients will need the returned value, record it
+		val := string(resp.Msg)
+
+		logger.Infof("Successfully queried chaincode: %s", val)
+	}
 
 	return nil
 }
