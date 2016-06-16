@@ -49,6 +49,7 @@ import (
 
 	"github.com/hyperledger/fabric/consensus/helper"
 	"github.com/hyperledger/fabric/core"
+	"github.com/hyperledger/fabric/core/async"
 	"github.com/hyperledger/fabric/core/chaincode"
 	"github.com/hyperledger/fabric/core/comm"
 	"github.com/hyperledger/fabric/core/crypto"
@@ -512,6 +513,7 @@ func serve(args []string) error {
 	// Create and register the REST service if configured
 	if viper.GetBool("rest.enabled") {
 		go rest.StartOpenchainRESTServer(serverOpenchain, serverDevops)
+		go async.StartOpenchainAsyncAgent(serverOpenchain, serverDevops)
 	}
 
 	rootNodes := discInstance.GetRootNodes()
