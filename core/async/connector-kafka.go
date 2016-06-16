@@ -8,6 +8,9 @@ import (
 	"github.com/spf13/viper"
 )
 
+const FLAG_ZK = "kafka-zookeeper"
+const FLAG_TOPIC = "kafka-topic-async-api"
+
 type KafkaConnector struct {
 }
 
@@ -16,12 +19,12 @@ func (c *KafkaConnector) SystemName() string {
 }
 
 func (c *KafkaConnector) RuntimeFlags() [][]string {
-	return [][]string{{"kafka-zookeeper", "Addresses of Kafka zookeeper ensemble"}, {"kafka-topic-async-api", "Kafka topic used to asynchronously submit transactions"}}
+	return [][]string{{FLAG_ZK, "Addresses of Kafka zookeeper ensemble"}, {FLAG_TOPIC, "Kafka topic used to asynchronously submit transactions"}}
 }
 
 func (c *KafkaConnector) Start() error {
-	zk := viper.GetString("kafka-zookeeper")
-	topic := viper.GetString("kafka-topic-async-api")
+	zk := viper.GetString(FLAG_ZK)
+	topic := viper.GetString(FLAG_TOPIC)
 
 	config := getConsumerConfig(zk)
 	//	config.Strategy = newPartitionTrackingStrategy(consumeStatus, -1)

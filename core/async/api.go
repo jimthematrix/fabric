@@ -477,15 +477,9 @@ func StartOpenchainAsyncAgent(server *rest.ServerOpenchain, devops *core.Devops)
 				err1 := connector.Start()
 
 				if err1 != nil {
-					connectorLogger.Error(fmt.Sprintf("Failed to initialize transactions queue connector: %v. %v", txsSystem, err1))
+					connectorLogger.Errorf("Failed to initialize transactions queue connector: %v. %v", txsSystem, err1)
 				} else {
-					defer func() {
-						if err2 := connector.Close(); err2 != nil {
-							connectorLogger.Error(fmt.Sprintf("Failed to close transactions queue connector: %v. %v", txsSystem, err2))
-						} else {
-							connectorLogger.Info("Successfully close connection with %v", txsSystem)
-						}
-					}()
+					connectorLogger.Infof("Successfully started Async transaction agent with %v", txsSystem)
 				}
 
 				break
