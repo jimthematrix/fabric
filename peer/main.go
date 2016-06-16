@@ -39,6 +39,7 @@ import (
 	"github.com/howeyc/gopass"
 	"github.com/op/go-logging"
 	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 	"github.com/spf13/viper"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
@@ -254,6 +255,11 @@ func main() {
 	viper.BindPFlag("peer_gomaxprocs", flags.Lookup("peer-gomaxprocs"))
 	viper.BindPFlag("peer_discovery_enabled", flags.Lookup("peer-discovery-enabled"))
 
+	flags.String("transactions-queue", "", "Optional external queue for asynchronously submission transactions")
+	viper.BindPFlag("transactions-queue", flags.Lookup("transactions-queue"))
+
+	setupTransactionsQueueFlags(flags)
+
 	// Now set the configuration file.
 	viper.SetConfigName(cmdRoot) // Name of config file (without extension)
 	viper.AddConfigPath("./")    // Path to look for the config file in
@@ -316,6 +322,20 @@ func main() {
 	// need to exit with a non-0 status
 	if mainCmd.Execute() != nil {
 		os.Exit(1)
+	}
+}
+
+func setupTransactionsQueueFlags(flags *pflag.FlagSet) {
+	connectors := async.ExternalConnectors.GetConnectorImpls()
+	for _, ctr := range connectors {
+		rflags := ctr.RuntimeFlags()
+
+		if len(rflags) > 0 {
+			for _, rflag := range rflags {
+				flags.String(rflag[0], "", rflag[1])
+				viper.BindPFlag(rflag[0], flags.Lookup(rflag[0]))
+			}
+		}
 	}
 }
 

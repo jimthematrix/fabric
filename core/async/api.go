@@ -7,7 +7,7 @@ import (
 	"io/ioutil"
 	"os"
 	"strings"
-	"time"
+	"sync"
 
 	"golang.org/x/net/context"
 
@@ -16,10 +16,35 @@ import (
 	"github.com/hyperledger/fabric/core/rest"
 	pb "github.com/hyperledger/fabric/protos"
 
-	gkc "github.com/elodina/go_kafka_client"
 	"github.com/op/go-logging"
 	"github.com/spf13/viper"
 )
+
+type Connector interface {
+	SystemName() string
+	RuntimeFlags() [][]string
+	Start() error
+	Close() error
+}
+
+type ConnectorsList struct {
+	sync.RWMutex
+	connectors []Connector
+}
+
+func (cl *ConnectorsList) AddConnectorImpl(c Connector) {
+	cl.Lock()
+
+	cl.connectors = append(cl.connectors, c)
+
+	cl.Unlock()
+}
+
+func (cl *ConnectorsList) GetConnectorImpls() []Connector {
+	return cl.connectors
+}
+
+var ExternalConnectors ConnectorsList
 
 // serverOpenchain is a variable that holds the pointer to the
 // underlying ServerOpenchain object. serverDevops is a variable that holds
@@ -65,36 +90,7 @@ func (id *rpcID) MarshalJSON() ([]byte, error) {
 	return nil, errors.New("cannot marshal rpcID")
 }
 
-var zk = "192.168.99.100:2181"
-var topic = "hltxs"
-
 var logger = logging.MustGetLogger("Async Messaging API")
-
-func getConsumerConfig(localZk string) *gkc.ConsumerConfig {
-	config := gkc.DefaultConsumerConfig()
-	config.AutoOffsetReset = gkc.SmallestOffset
-	config.WorkerFailureCallback = func(_ *gkc.WorkerManager) gkc.FailedDecision {
-		return gkc.CommitOffsetAndContinue
-	}
-	config.WorkerFailedAttemptCallback = func(_ *gkc.Task, _ gkc.WorkerResult) gkc.FailedDecision {
-		return gkc.CommitOffsetAndContinue
-	}
-	config.Strategy = func(_ *gkc.Worker, msg *gkc.Message, id gkc.TaskId) gkc.WorkerResult {
-		fmt.Printf("Message received\n\n%v\n\n", string(msg.Value))
-		ProcessChaincode(msg.Value)
-
-		return gkc.NewSuccessfulResult(id)
-	}
-
-	zkConfig := gkc.NewZookeeperConfig()
-	zkConfig.ZookeeperConnect = []string{localZk}
-	zkConfig.MaxRequestRetries = 10
-	zkConfig.ZookeeperSessionTimeout = 30 * time.Second
-	zkConfig.RequestBackoff = 3 * time.Second
-	config.Coordinator = gkc.NewZookeeperCoordinator(zkConfig)
-
-	return config
-}
 
 func ProcessChaincode(msgBody []byte) {
 	logger.Info("Async Messaging API processing chaincode request...")
@@ -326,15 +322,30 @@ func StartOpenchainAsyncAgent(server *rest.ServerOpenchain, devops *core.Devops)
 	serverOpenchain = server
 	serverDevops = devops
 
-	consumeStatus := make(chan int)
+	var connector Connector
 
-	config := getConsumerConfig(zk)
-	//	config.Strategy = newPartitionTrackingStrategy(consumeStatus, -1)
-	consumer := gkc.NewConsumer(config)
-	go consumer.StartStatic(map[string]int{topic: 2})
+	txsSystem := viper.GetString("transactions-queue")
 
-	for {
-		value := <-consumeStatus
-		fmt.Println("Consumer status received: %v", value)
+	if txsSystem != "" {
+		for _, c := range ExternalConnectors.connectors {
+			if txsSystem == c.SystemName() {
+				connector = c
+				err1 := connector.Start()
+
+				if err1 != nil {
+					connectorLogger.Error(fmt.Sprintf("Failed to initialize transactions queue connector: %v. %v", txsSystem, err1))
+				} else {
+					defer func() {
+						if err2 := connector.Close(); err2 != nil {
+							connectorLogger.Error(fmt.Sprintf("Failed to close transactions queue connector: %v. %v", txsSystem, err2))
+						} else {
+							connectorLogger.Info("Successfully close connection with %v", txsSystem)
+						}
+					}()
+				}
+
+				break
+			}
+		}
 	}
 }
