@@ -24,7 +24,7 @@ import (
 	"github.com/hyperledger/fabric/consensus/obcpbft/events"
 )
 
-// viewChangeQuorumEvent is returned to the event loop when the number of view change matches is exactly the required quorum size
+// viewChangeQuorumEvent is returned to the event loop when a new ViewChange message is received which is part of a quorum cert
 type viewChangeQuorumEvent struct{}
 
 func (instance *pbftCore) correctViewChange(vc *ViewChange) bool {
@@ -158,10 +158,16 @@ func (instance *pbftCore) sendViewChange() events.Event {
 	}
 
 	for _, p := range instance.pset {
+		if p.SequenceNumber < instance.h {
+			logger.Errorf("BUG! Replica %d should not have anything in our pset less than h, found %+v", instance.id, p)
+		}
 		vc.Pset = append(vc.Pset, p)
 	}
 
 	for _, q := range instance.qset {
+		if q.SequenceNumber < instance.h {
+			logger.Errorf("BUG! Replica %d should not have anything in our qset less than h, found %+v", instance.id, q)
+		}
 		vc.Qset = append(vc.Qset, q)
 	}
 
@@ -171,6 +177,8 @@ func (instance *pbftCore) sendViewChange() events.Event {
 		instance.id, vc.View, vc.H, len(vc.Cset), len(vc.Pset), len(vc.Qset))
 
 	instance.innerBroadcast(&Message{&Message_ViewChange{vc}})
+
+	instance.vcResendTimer.Reset(instance.vcResendTimeout, viewChangeResendTimerEvent{})
 
 	return instance.recvViewChange(vc)
 }
@@ -237,7 +245,8 @@ func (instance *pbftCore) recvViewChange(vc *ViewChange) events.Event {
 	logger.Debugf("Replica %d now has %d view change requests for view %d", instance.id, quorum, instance.view)
 
 	if !instance.activeView && vc.View == instance.view && quorum >= instance.allCorrectReplicasQuorum() {
-		if quorum == instance.allCorrectReplicasQuorum() {
+		if quorum >= instance.allCorrectReplicasQuorum() {
+			instance.vcResendTimer.Stop()
 			instance.startTimer(instance.lastNewViewTimeout, "new view change")
 			instance.lastNewViewTimeout = 2 * instance.lastNewViewTimeout
 			return viewChangeQuorumEvent{}
@@ -326,6 +335,56 @@ func (instance *pbftCore) processNewView() events.Event {
 		return instance.sendViewChange()
 	}
 
+	speculativeLastExec := instance.lastExec
+	if instance.currentExec != nil {
+		speculativeLastExec = *instance.currentExec
+	}
+
+	// If we have no reached the sequence number, check to see if we can reach it without state transfer
+	// in general executions are better than state transfer
+	if speculativeLastExec < cp.SequenceNumber {
+		canExecuteToTarget := true
+	outer:
+		for seqNo := speculativeLastExec + 1; seqNo <= cp.SequenceNumber; seqNo++ {
+			found := false
+			for idx, cert := range instance.certStore {
+				if idx.n != seqNo {
+					continue
+				}
+
+				quorum := 0
+				for _, p := range cert.commit {
+					// Was this committed in the previous view
+					if p.View == idx.v && p.SequenceNumber == seqNo {
+						quorum++
+					}
+				}
+
+				if quorum < instance.intersectionQuorum() {
+					logger.Debugf("Replica %d missing quorum of commit certificate for seqNo=%d, only has %d of %d", instance.id, quorum, instance.intersectionQuorum())
+					continue
+				}
+
+				found = true
+				break
+			}
+
+			if !found {
+				canExecuteToTarget = false
+				logger.Debugf("Replica %d missing commit certificate for seqNo=%d", instance.id, seqNo)
+				break outer
+			}
+
+		}
+
+		if canExecuteToTarget {
+			logger.Debugf("Replica %d needs to process a new view, but can execute to the checkpoint seqNo %d, delaying processing of new view", instance.id, cp.SequenceNumber)
+			return nil
+		}
+
+		logger.Infof("Replica %d cannot execute to the view change checkpoint with seqNo %d", instance.id, cp.SequenceNumber)
+	}
+
 	msgList := instance.assignSequenceNumbers(nv.Vset, cp.SequenceNumber)
 	if msgList == nil {
 		logger.Warningf("Replica %d could not assign sequence numbers: %+v",
@@ -343,8 +402,8 @@ func (instance *pbftCore) processNewView() events.Event {
 		instance.moveWatermarks(cp.SequenceNumber)
 	}
 
-	if instance.lastExec < cp.SequenceNumber {
-		logger.Warningf("Replica %d missing base checkpoint %d (%s)", instance.id, cp.SequenceNumber, cp.Id)
+	if speculativeLastExec < cp.SequenceNumber {
+		logger.Warningf("Replica %d missing base checkpoint %d (%s), our most recent execution %d", instance.id, cp.SequenceNumber, cp.Id, speculativeLastExec)
 
 		snapshotID, err := base64.StdEncoding.DecodeString(cp.Id)
 		if nil != err {
@@ -353,9 +412,16 @@ func (instance *pbftCore) processNewView() events.Event {
 			return nil
 		}
 
-		instance.skipInProgress = true
-		instance.stateTransferring = true
-		instance.consumer.skipTo(cp.SequenceNumber, snapshotID, replicas)
+		target := &stateUpdateTarget{
+			checkpointMessage: checkpointMessage{
+				seqNo: cp.SequenceNumber,
+				id:    snapshotID,
+			},
+			replicas: replicas,
+		}
+
+		instance.updateHighStateTarget(target)
+		instance.stateTransfer(target)
 	}
 
 	for n, d := range nv.Xset {
@@ -400,12 +466,21 @@ func (instance *pbftCore) processNewView2(nv *NewView) events.Event {
 	instance.activeView = true
 	delete(instance.newViewStore, instance.view-1)
 
-	instance.seqNo = 0
+	instance.seqNo = instance.h
 	for n, d := range nv.Xset {
+		if n <= instance.h {
+			continue
+		}
+
+		req, ok := instance.reqStore[d]
+		if !ok && d != "" {
+			logger.Criticalf("Replica %d is missing request for seqNo=%d with digest '%s' for assigned prepare after fetching, this indicates a serious bug", instance.id, n, d)
+		}
 		preprep := &PrePrepare{
 			View:           instance.view,
 			SequenceNumber: n,
 			RequestDigest:  d,
+			Request:        req,
 			ReplicaId:      instance.id,
 		}
 		cert := instance.getCert(instance.view, n)
@@ -427,9 +502,11 @@ func (instance *pbftCore) processNewView2(nv *NewView) events.Event {
 				RequestDigest:  d,
 				ReplicaId:      instance.id,
 			}
-			cert := instance.getCert(instance.view, n)
-			cert.sentPrepare = true
-			instance.recvPrepare(prep)
+			if n > instance.h {
+				cert := instance.getCert(instance.view, n)
+				cert.sentPrepare = true
+				instance.recvPrepare(prep)
+			}
 			instance.innerBroadcast(&Message{&Message_Prepare{prep}})
 		}
 	} else {

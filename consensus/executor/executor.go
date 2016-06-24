@@ -17,8 +17,6 @@ limitations under the License.
 package executor
 
 import (
-	"fmt"
-
 	"github.com/hyperledger/fabric/consensus"
 	"github.com/hyperledger/fabric/consensus/obcpbft/events"
 	"github.com/hyperledger/fabric/core/peer/statetransfer"
@@ -99,6 +97,8 @@ func (co *coordinatorImpl) ProcessEvent(event events.Event) events.Event {
 
 		info := co.rawExecutor.GetBlockchainInfo()
 
+		logger.Debugf("Committed block %d with hash %x to chain", info.Height-1, info.CurrentBlockHash)
+
 		co.consumer.Committed(et.tag, info)
 	case rollbackEvent:
 		logger.Debug("Executor is processing an rollbackEvent")
@@ -136,15 +136,15 @@ func (co *coordinatorImpl) ProcessEvent(event events.Event) events.Event {
 				return nil
 			}
 			if !recoverable {
-				logger.Warning("State transfer failed irrecoverably, calling back to consumer: %s", err)
+				logger.Warningf("State transfer failed irrecoverably, calling back to consumer: %s", err)
 				co.consumer.StateUpdated(et.tag, nil)
 				return nil
 			}
-			logger.Warning("State transfer did not complete successfully but is recoverable, trying again: %s", err)
+			logger.Warningf("State transfer did not complete successfully but is recoverable, trying again: %s", err)
 			et.peers = nil // Broaden the peers included in recover to all connected
 		}
 	default:
-		logger.Error(fmt.Sprintf("Unknown event type %s", et))
+		logger.Errorf("Unknown event type %s", et)
 	}
 
 	return nil

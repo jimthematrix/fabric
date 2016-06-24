@@ -69,6 +69,9 @@ type pbftMessageEvent pbftMessage
 // viewChangedEvent is sent when the view change timer expires
 type viewChangedEvent struct{}
 
+// viewChangeResendTimerEvent is sent when the view change resend timer expires
+type viewChangeResendTimerEvent struct{}
+
 // returnRequestEvent is sent by pbft when we are forwarded a request
 type returnRequestEvent *Request
 
@@ -146,8 +149,10 @@ type pbftCore struct {
 
 	currentExec        *uint64             // currently executing request
 	timerActive        bool                // is the timer running?
+	vcResendTimer      events.Timer        // timer triggering resend of a view change
 	newViewTimer       events.Timer        // timeout triggering a view change
 	requestTimeout     time.Duration       // progress timeout for requests
+	vcResendTimeout    time.Duration       // timeout before resending view change
 	newViewTimeout     time.Duration       // progress timeout for new views
 	newViewTimerReason string              // what triggered the timer
 	lastNewViewTimeout time.Duration       // last timeout we used during this view change
@@ -219,6 +224,7 @@ func newPbftCore(id uint64, config *viper.Viper, consumer innerStack, etf events
 	instance.consumer = consumer
 
 	instance.newViewTimer = etf.CreateTimer()
+	instance.vcResendTimer = etf.CreateTimer()
 	instance.nullRequestTimer = etf.CreateTimer()
 
 	instance.N = config.GetInt("general.N")
@@ -239,6 +245,10 @@ func newPbftCore(id uint64, config *viper.Viper, consumer innerStack, etf events
 	instance.byzantine = config.GetBool("general.byzantine")
 
 	instance.requestTimeout, err = time.ParseDuration(config.GetString("general.timeout.request"))
+	if err != nil {
+		panic(fmt.Errorf("Cannot parse request timeout: %s", err))
+	}
+	instance.vcResendTimeout, err = time.ParseDuration(config.GetString("general.timeout.resendviewchange"))
 	if err != nil {
 		panic(fmt.Errorf("Cannot parse request timeout: %s", err))
 	}
@@ -264,14 +274,14 @@ func newPbftCore(id uint64, config *viper.Viper, consumer innerStack, etf events
 	logger.Infof("PBFT Log multiplier = %v", instance.logMultiplier)
 	logger.Infof("PBFT log size (L) = %v", instance.L)
 	if instance.nullRequestTimeout > 0 {
-		logger.Info("PBFT null requests timeout = %v", instance.nullRequestTimeout)
+		logger.Infof("PBFT null requests timeout = %v", instance.nullRequestTimeout)
 	} else {
-		logger.Info("PBFT null requests disabled")
+		logger.Infof("PBFT null requests disabled")
 	}
 	if instance.viewChangePeriod > 0 {
-		logger.Info("PBFT view change period = %v", instance.viewChangePeriod)
+		logger.Infof("PBFT view change period = %v", instance.viewChangePeriod)
 	} else {
-		logger.Info("PBFT automatic view change disabled")
+		logger.Infof("PBFT automatic view change disabled")
 	}
 
 	// init the logs
@@ -356,10 +366,11 @@ func (instance *pbftCore) ProcessEvent(e events.Event) events.Event {
 			} else {
 				logger.Warningf("Replica %d recovered to seqNo %d but our low watermark has moved to %d", instance.id, update.seqNo, instance.h)
 			}
-			if instance.highStateTarget != nil && update.seqNo < instance.highStateTarget.seqNo {
+			if instance.highStateTarget == nil {
+				logger.Debugf("Replica %d has no state targets, cannot resume state transfer yet", instance.id)
+			} else if update.seqNo < instance.highStateTarget.seqNo {
 				logger.Debugf("Replica %d has state target for %d, transferring", instance.id, instance.highStateTarget.seqNo)
-				instance.stateTransferring = true
-				instance.consumer.skipTo(instance.highStateTarget.seqNo, instance.highStateTarget.id, instance.highStateTarget.replicas)
+				instance.retryStateTransfer(nil)
 			} else {
 				logger.Debugf("Replica %d has no state target above %d, highest is %d", instance.id, update.seqNo, instance.highStateTarget.seqNo)
 			}
@@ -374,12 +385,17 @@ func (instance *pbftCore) ProcessEvent(e events.Event) events.Event {
 		instance.executeOutstanding()
 	case execDoneEvent:
 		instance.execDoneSync()
+		if instance.skipInProgress {
+			instance.retryStateTransfer(nil)
+		}
+		// We will delay new view processing sometimes
+		return instance.processNewView()
 	case nullRequestEvent:
 		instance.nullRequestHandler()
 	case workEvent:
 		et() // Used to allow the caller to steal use of the main thread, to be removed
 	case viewChangeQuorumEvent:
-		logger.Debug("Replica %d received view change quorum, processing new view", instance.id)
+		logger.Debugf("Replica %d received view change quorum, processing new view", instance.id)
 		if instance.primary(instance.view) == instance.id {
 			return instance.sendNewView()
 		}
@@ -387,6 +403,14 @@ func (instance *pbftCore) ProcessEvent(e events.Event) events.Event {
 		return instance.processNewView()
 	case viewChangedEvent:
 		// No-op, processed by plugins if needed
+	case viewChangeResendTimerEvent:
+		if instance.activeView {
+			logger.Warningf("Replica %d had its view change resend timer expire but it's in an active view, this is benign but may indicate a bug", instance.id)
+			return nil
+		}
+		logger.Debugf("Replica %d view change resend timer expired before view change quorum was reached, resending", instance.id)
+		instance.view-- // sending the view change increments this
+		return instance.sendViewChange()
 	default:
 		logger.Warningf("Replica %d received an unknown message type %T", instance.id, et)
 	}
@@ -611,7 +635,7 @@ func (instance *pbftCore) recvRequest(req *Request) error {
 		instance.nullRequestTimer.Stop()
 		instance.sendPrePrepare(req, digest)
 	} else {
-		logger.Debug("Replica %d is backup, not sending pre-prepare for request %s", instance.id, digest)
+		logger.Debugf("Replica %d is backup, not sending pre-prepare for request %s", instance.id, digest)
 	}
 
 	return nil
@@ -624,7 +648,7 @@ func (instance *pbftCore) sendPrePrepare(req *Request, digest string) {
 	for _, cert := range instance.certStore { // check for other PRE-PREPARE for same digest, but different seqNo
 		if p := cert.prePrepare; p != nil {
 			if p.View == instance.view && p.SequenceNumber != n && p.RequestDigest == digest && digest != "" {
-				logger.Info("Other pre-prepare found with same digest but different seqNo: %d instead of %d", p.SequenceNumber, n)
+				logger.Infof("Other pre-prepare found with same digest but different seqNo: %d instead of %d", p.SequenceNumber, n)
 				return
 			}
 		}
@@ -640,7 +664,7 @@ func (instance *pbftCore) sendPrePrepare(req *Request, digest string) {
 		return
 	}
 
-	logger.Debug("Primary %d broadcasting pre-prepare for view=%d/seqNo=%d and digest %s",
+	logger.Debugf("Primary %d broadcasting pre-prepare for view=%d/seqNo=%d and digest %s",
 		instance.id, instance.view, n, digest)
 	instance.seqNo = n
 	preprep := &PrePrepare{
@@ -860,16 +884,62 @@ func (instance *pbftCore) recvCommit(commit *Commit) error {
 		instance.stopTimer()
 		instance.lastNewViewTimeout = instance.newViewTimeout
 		delete(instance.outstandingReqs, commit.RequestDigest)
-		instance.startTimerIfOutstandingRequests()
-		if commit.SequenceNumber == instance.viewChangeSeqNo {
-			logger.Info("Replica %d cycling view", instance.id)
-			instance.sendViewChange()
-		}
 
 		instance.executeOutstanding()
+
+		if commit.SequenceNumber == instance.viewChangeSeqNo {
+			logger.Infof("Replica %d cycling view for seqNo=%d", instance.id, commit.SequenceNumber)
+			instance.sendViewChange()
+		}
 	}
 
 	return nil
+}
+
+func (instance *pbftCore) updateHighStateTarget(target *stateUpdateTarget) {
+	if instance.highStateTarget != nil && instance.highStateTarget.seqNo >= target.seqNo {
+		logger.Debugf("Replica %d not update state target to seqNo %d, has target for seqNo %d", instance.id, target.seqNo, instance.highStateTarget.seqNo)
+		return
+	}
+
+	instance.highStateTarget = target
+}
+
+func (instance *pbftCore) stateTransfer(optional *stateUpdateTarget) {
+	if !instance.skipInProgress {
+		logger.Debugf("Replica %d is out of sync, pending state transfer", instance.id)
+		instance.skipInProgress = true
+		instance.consumer.invalidateState()
+	}
+
+	instance.retryStateTransfer(optional)
+}
+
+func (instance *pbftCore) retryStateTransfer(optional *stateUpdateTarget) {
+	if instance.currentExec != nil {
+		logger.Debugf("Replica %d is currently mid-execution, it must wait for the execution to complete before performing state transfer", instance.id)
+		return
+	}
+
+	if instance.stateTransferring {
+		logger.Debugf("Replica %d is currently mid state transfer, it must wait for this state transfer to complete before initiating a new one", instance.id)
+		return
+	}
+
+	target := optional
+	if target == nil {
+		if instance.highStateTarget == nil {
+			logger.Debugf("Replica %d has no targets to attempt state transfer to, delaying", instance.id)
+			return
+		}
+		target = instance.highStateTarget
+	}
+
+	instance.stateTransferring = true
+
+	logger.Debugf("Replica %d is initiating state transfer to seqNo %d", instance.id, target.seqNo)
+	instance.consumer.skipTo(target.seqNo, target.id, target.replicas)
+
 }
 
 func (instance *pbftCore) executeOutstanding() {
@@ -887,7 +957,7 @@ func (instance *pbftCore) executeOutstanding() {
 
 	logger.Debugf("Replica %d certstore %+v", instance.id, instance.certStore)
 
-	return
+	instance.startTimerIfOutstandingRequests()
 }
 
 func (instance *pbftCore) executeOne(idx msgID) bool {
@@ -1088,22 +1158,20 @@ func (instance *pbftCore) witnessCheckpointWeakCert(chkpt *Checkpoint) {
 		return
 	}
 
-	if instance.highStateTarget == nil || instance.highStateTarget.seqNo < chkpt.SequenceNumber {
-		instance.highStateTarget = &stateUpdateTarget{
-			checkpointMessage: checkpointMessage{
-				seqNo: chkpt.SequenceNumber,
-				id:    snapshotID,
-			},
-			replicas: checkpointMembers,
-		}
+	target := &stateUpdateTarget{
+		checkpointMessage: checkpointMessage{
+			seqNo: chkpt.SequenceNumber,
+			id:    snapshotID,
+		},
+		replicas: checkpointMembers,
 	}
+	instance.updateHighStateTarget(target)
 
-	if instance.skipInProgress && !instance.stateTransferring {
+	if instance.skipInProgress {
 		logger.Debugf("Replica %d is catching up and witnessed a weak certificate for checkpoint %d, weak cert attested to by %d of %d (%v)",
 			instance.id, chkpt.SequenceNumber, i, instance.replicaCount, checkpointMembers)
 		// The view should not be set to active, this should be handled by the yet unimplemented SUSPECT, see https://github.com/hyperledger/fabric/issues/1120
-		instance.consumer.skipTo(chkpt.SequenceNumber, snapshotID, checkpointMembers) // This will kick off state transfer if it is not already going, but if it is going, we may transfer to an earlier point
-		instance.stateTransferring = true
+		instance.retryStateTransfer(target)
 	}
 }
 
@@ -1154,14 +1222,29 @@ func (instance *pbftCore) recvCheckpoint(chkpt *Checkpoint) events.Event {
 	// we have reached this checkpoint
 	// Note, this is not divergent from the paper, as the paper requires that
 	// the quorum certificate must contain 2f+1 messages, including its own
-	if _, ok := instance.chkpts[chkpt.SequenceNumber]; !ok {
+	chkptID, ok := instance.chkpts[chkpt.SequenceNumber]
+	if !ok {
 		logger.Debugf("Replica %d found checkpoint quorum for seqNo %d, digest %s, but it has not reached this checkpoint itself yet",
 			instance.id, chkpt.SequenceNumber, chkpt.Id)
+		if instance.skipInProgress {
+			logSafetyBound := instance.h + instance.L/2
+			// As an optimization, if we are more than half way out of our log and in state transfer, move our watermarks so we don't lose track of the network
+			// if needed, state transfer will restart on completion to a more recent point in time
+			if chkpt.SequenceNumber >= logSafetyBound {
+				logger.Debugf("Replica %d is in state transfer, but, the network seems to be moving on past %d, moving our watermarks to stay with it", instance.id, logSafetyBound)
+				instance.moveWatermarks(chkpt.SequenceNumber)
+			}
+		}
 		return nil
 	}
 
 	logger.Debugf("Replica %d found checkpoint quorum for seqNo %d, digest %s",
 		instance.id, chkpt.SequenceNumber, chkpt.Id)
+
+	if chkptID != chkpt.Id {
+		logger.Criticalf("Replica %d generated a checkpoint of %s, but a quorum of the network agrees on %s.  This is almost definitely non-deterministic chaincode.", instance.id, chkptID, chkpt.Id)
+		instance.stateTransfer(nil)
+	}
 
 	instance.moveWatermarks(chkpt.SequenceNumber)
 
@@ -1256,10 +1339,17 @@ func (instance *pbftCore) updateViewChangeSeqNo() {
 	if instance.viewChangePeriod <= 0 {
 		return
 	}
-	instance.viewChangeSeqNo = instance.seqNo + instance.viewChangePeriod*instance.K
+	// Ensure the view change always occurs at a checkpoint boundary
+	instance.viewChangeSeqNo = instance.seqNo + instance.viewChangePeriod*instance.K - instance.seqNo%instance.K
+	logger.Debugf("Replica %d updating view change sequence number to %d", instance.id, instance.viewChangeSeqNo)
 }
 
 func (instance *pbftCore) startTimerIfOutstandingRequests() {
+	if instance.skipInProgress || instance.currentExec != nil {
+		// Do not start the view change timer if we are executing or state transferring, these take arbitrarilly long amounts of time
+		return
+	}
+
 	if len(instance.outstandingReqs) > 0 {
 		reqs := func() []string {
 			var r []string

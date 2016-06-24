@@ -17,6 +17,7 @@ limitations under the License.
 package obcpbft
 
 import (
+	"encoding/base64"
 	"fmt"
 	gp "google/protobuf"
 	"os"
@@ -1410,6 +1411,7 @@ func TestNetworkPeriodicViewChange(t *testing.T) {
 		if pep.sc.executions != 5 {
 			t.Errorf("Instance %d executed incorrect number of transactions: %d", pep.id, pep.sc.executions)
 		}
+		// We should be in view 2, 2 exec, VC, 2 exec, VC, exec
 		if pep.pbft.view != 2 {
 			t.Errorf("Instance %d: expected view=2", pep.id)
 		}
@@ -1444,5 +1446,369 @@ func TestNetworkPeriodicViewChangeMissing(t *testing.T) {
 		if pep.pbft.view != 1 {
 			t.Errorf("Instance %d: expected view=1", pep.id)
 		}
+	}
+}
+
+// TestViewChangeCannotExecuteToCheckpoint tests a replica mid-execution, which receives a view change to a checkpoint above its watermarks
+// but does _not_ have enough commit certificates to reach the checkpoint. state should transfer
+func TestViewChangeCannotExecuteToCheckpoint(t *testing.T) {
+	instance := newPbftCore(3, loadConfig(), &omniProto{
+		broadcastImpl:       func(b []byte) {},
+		getStateImpl:        func() []byte { return []byte("state") },
+		signImpl:            func(b []byte) ([]byte, error) { return b, nil },
+		verifyImpl:          func(senderID uint64, signature []byte, message []byte) error { return nil },
+		invalidateStateImpl: func() {},
+	}, &inertTimerFactory{})
+	instance.activeView = false
+	instance.view = 1
+	newViewBaseSeqNo := uint64(10)
+	nextExec := uint64(6)
+	instance.currentExec = &nextExec
+
+	for i := instance.lastExec; i < newViewBaseSeqNo; i++ {
+		commit := &Commit{View: 0, SequenceNumber: i}
+		prepare := &Prepare{View: 0, SequenceNumber: i}
+		instance.certStore[msgID{v: 0, n: i}] = &msgCert{
+			digest:     "", // null request
+			prePrepare: &PrePrepare{View: 0, SequenceNumber: i},
+			prepare:    []*Prepare{prepare, prepare, prepare},
+			commit:     []*Commit{commit, commit, commit},
+		}
+	}
+
+	vset := make([]*ViewChange, 3)
+
+	cset := []*ViewChange_C{
+		{
+			SequenceNumber: newViewBaseSeqNo,
+			Id:             base64.StdEncoding.EncodeToString([]byte("Ten")),
+		},
+	}
+
+	for i := 0; i < 3; i++ {
+		// Replica 0 sent checkpoints for 100
+		vset[i] = &ViewChange{
+			H:    newViewBaseSeqNo,
+			Cset: cset,
+		}
+	}
+
+	xset := make(map[uint64]string)
+	xset[11] = ""
+
+	instance.lastExec = 9
+
+	instance.newViewStore[1] = &NewView{
+		View:      1,
+		Vset:      vset,
+		Xset:      xset,
+		ReplicaId: 1,
+	}
+
+	if _, ok := instance.processNewView().(viewChangedEvent); !ok {
+		t.Fatalf("Should have processed the new view")
+	}
+
+	if !instance.skipInProgress {
+		t.Fatalf("Should have done state transfer")
+	}
+}
+
+// TestViewChangeCanExecuteToCheckpoint tests a replica mid-execution, which receives a view change to a checkpoint above its watermarks
+// but which has enough commit certificates to reach the checkpoint. State should not transfer and executions should trigger the view change
+func TestViewChangeCanExecuteToCheckpoint(t *testing.T) {
+	instance := newPbftCore(3, loadConfig(), &omniProto{
+		broadcastImpl: func(b []byte) {},
+		getStateImpl:  func() []byte { return []byte("state") },
+		signImpl:      func(b []byte) ([]byte, error) { return b, nil },
+		verifyImpl:    func(senderID uint64, signature []byte, message []byte) error { return nil },
+		skipToImpl: func(s uint64, id []byte, replicas []uint64) {
+			t.Fatalf("Should not have performed state transfer, should have caught up via execution")
+		},
+	}, &inertTimerFactory{})
+	instance.activeView = false
+	instance.view = 1
+	instance.lastExec = 5
+	newViewBaseSeqNo := uint64(10)
+	nextExec := uint64(6)
+	instance.currentExec = &nextExec
+
+	for i := nextExec + 1; i <= newViewBaseSeqNo; i++ {
+		commit := &Commit{View: 0, SequenceNumber: i}
+		prepare := &Prepare{View: 0, SequenceNumber: i}
+		instance.certStore[msgID{v: 0, n: i}] = &msgCert{
+			digest:     "", // null request
+			prePrepare: &PrePrepare{View: 0, SequenceNumber: i},
+			prepare:    []*Prepare{prepare, prepare, prepare},
+			commit:     []*Commit{commit, commit, commit},
+		}
+	}
+
+	vset := make([]*ViewChange, 3)
+
+	cset := []*ViewChange_C{
+		{
+			SequenceNumber: newViewBaseSeqNo,
+			Id:             base64.StdEncoding.EncodeToString([]byte("Ten")),
+		},
+	}
+
+	for i := 0; i < 3; i++ {
+		// Replica 0 sent checkpoints for 100
+		vset[i] = &ViewChange{
+			H:    newViewBaseSeqNo,
+			Cset: cset,
+		}
+	}
+
+	xset := make(map[uint64]string)
+	xset[11] = ""
+
+	instance.lastExec = 9
+
+	instance.newViewStore[1] = &NewView{
+		View:      1,
+		Vset:      vset,
+		Xset:      xset,
+		ReplicaId: 1,
+	}
+
+	if instance.processNewView() != nil {
+		t.Fatalf("Should not have processed the new view")
+	}
+
+	events.SendEvent(instance, execDoneEvent{})
+
+	if !instance.activeView {
+		t.Fatalf("Should have finished processing new view after executions")
+	}
+}
+
+func TestViewWithOldSeqNos(t *testing.T) {
+	instance := newPbftCore(3, loadConfig(), &omniProto{
+		broadcastImpl: func(b []byte) {},
+		signImpl:      func(b []byte) ([]byte, error) { return b, nil },
+		verifyImpl:    func(senderID uint64, signature []byte, message []byte) error { return nil },
+	}, &inertTimerFactory{})
+	instance.activeView = false
+	instance.view = 1
+
+	vset := make([]*ViewChange, 3)
+
+	cset := []*ViewChange_C{
+		{
+			SequenceNumber: 0,
+			Id:             base64.StdEncoding.EncodeToString([]byte("Zero")),
+		},
+	}
+
+	qset := []*ViewChange_PQ{
+		{
+			SequenceNumber: 9,
+			Digest:         "nine",
+			View:           0,
+		},
+		{
+			SequenceNumber: 2,
+			Digest:         "two",
+			View:           0,
+		},
+	}
+
+	for i := 0; i < 3; i++ {
+		// Replica 0 sent checkpoints for 100
+		vset[i] = &ViewChange{
+			H:    0,
+			Cset: cset,
+			Qset: qset,
+			Pset: qset,
+		}
+	}
+
+	xset := instance.assignSequenceNumbers(vset, 0)
+
+	instance.lastExec = 10
+	instance.moveWatermarks(instance.lastExec)
+
+	instance.newViewStore[1] = &NewView{
+		View:      1,
+		Vset:      vset,
+		Xset:      xset,
+		ReplicaId: 1,
+	}
+
+	if _, ok := instance.processNewView().(viewChangedEvent); !ok {
+		t.Fatalf("Failed to successfully process new view")
+	}
+
+	for idx, val := range instance.certStore {
+		if idx.n < instance.h {
+			t.Errorf("Found %+v=%+v in certStore who's seqNo < %d", idx, val, instance.h)
+		}
+	}
+}
+
+func TestViewChangeDuringExecution(t *testing.T) {
+	skipped := false
+	instance := newPbftCore(3, loadConfig(), &omniProto{
+		viewChangeImpl: func(v uint64) {},
+		skipToImpl: func(s uint64, id []byte, replicas []uint64) {
+			skipped = true
+		},
+		invalidateStateImpl: func() {},
+		broadcastImpl:       func(b []byte) {},
+		signImpl:            func(b []byte) ([]byte, error) { return b, nil },
+		verifyImpl:          func(senderID uint64, signature []byte, message []byte) error { return nil },
+	}, &inertTimerFactory{})
+	instance.activeView = false
+	instance.view = 1
+	instance.lastExec = 1
+	nextExec := uint64(2)
+	instance.currentExec = &nextExec
+
+	vset := make([]*ViewChange, 3)
+
+	cset := []*ViewChange_C{
+		{
+			SequenceNumber: 100,
+			Id:             base64.StdEncoding.EncodeToString([]byte("onehundred")),
+		},
+	}
+
+	// Replica 0 sent checkpoints for 100
+	vset[0] = &ViewChange{
+		H:    90,
+		Cset: cset,
+	}
+
+	// Replica 1 sent checkpoints for 10
+	vset[1] = &ViewChange{
+		H:    90,
+		Cset: cset,
+	}
+
+	// Replica 2 sent checkpoints for 10
+	vset[2] = &ViewChange{
+		H:    90,
+		Cset: cset,
+	}
+
+	xset := make(map[uint64]string)
+	xset[101] = ""
+
+	instance.newViewStore[1] = &NewView{
+		View:      1,
+		Vset:      vset,
+		Xset:      xset,
+		ReplicaId: 1,
+	}
+
+	if _, ok := instance.processNewView().(viewChangedEvent); !ok {
+		t.Fatalf("Failed to successfully process new view")
+	}
+
+	if skipped {
+		t.Fatalf("Expected state transfer not to be kicked off until execution completes")
+	}
+
+	events.SendEvent(instance, execDoneEvent{})
+
+	if !skipped {
+		t.Fatalf("Expected state transfer to be kicked off once execution completed")
+	}
+}
+
+func TestStateTransferredToOldPoint(t *testing.T) {
+	skipped := false
+	instance := newPbftCore(3, loadConfig(), &omniProto{
+		skipToImpl: func(s uint64, id []byte, replicas []uint64) {
+			skipped = true
+		},
+		invalidateStateImpl: func() {},
+	}, &inertTimerFactory{})
+	instance.moveWatermarks(90)
+	instance.updateHighStateTarget(&stateUpdateTarget{
+		checkpointMessage: checkpointMessage{
+			seqNo: 100,
+			id:    []byte("onehundred"),
+		},
+	})
+
+	events.SendEvent(instance, stateUpdatedEvent{
+		chkpt: &checkpointMessage{
+			seqNo: 10,
+		},
+	})
+
+	if !skipped {
+		t.Fatalf("Expected state transfer to be kicked off once execution completed")
+	}
+}
+
+func TestStateNetworkMovesOnDuringSlowStateTransfer(t *testing.T) {
+	instance := newPbftCore(3, loadConfig(), &omniProto{
+		skipToImpl:          func(s uint64, id []byte, replicas []uint64) {},
+		invalidateStateImpl: func() {},
+		//broadcastImpl:       func(b []byte) {},
+		//signImpl:            func(b []byte) ([]byte, error) { return b, nil },
+		//verifyImpl:          func(senderID uint64, signature []byte, message []byte) error { return nil },
+	}, &inertTimerFactory{})
+	instance.skipInProgress = true
+
+	seqNo := uint64(20)
+
+	for i := uint64(0); i < 3; i++ {
+		events.SendEvent(instance, &Checkpoint{
+			SequenceNumber: seqNo,
+			ReplicaId:      i,
+			Id:             base64.StdEncoding.EncodeToString([]byte("twenty")),
+		})
+	}
+
+	if instance.h != seqNo {
+		t.Fatalf("Expected watermark movement to %d because of state transfer, but low watermark is %d", seqNo, instance.h)
+	}
+}
+
+// This test is designed to ensure state transfer occurs if our checkpoint does not match a quorum cert
+func TestCheckpointDiffersFromQuorum(t *testing.T) {
+	invalidated := false
+	skipped := false
+	instance := newPbftCore(3, loadConfig(), &omniProto{
+		//broadcastImpl:       func(b []byte) { viewChangeSent = true },
+		//signImpl:            func(b []byte) ([]byte, error) { return b, nil },
+		//verifyImpl:          func(senderID uint64, signature []byte, message []byte) error { return nil },
+		invalidateStateImpl: func() { invalidated = true },
+		skipToImpl:          func(s uint64, id []byte, replicas []uint64) { skipped = true },
+	}, &inertTimerFactory{})
+
+	seqNo := uint64(10)
+
+	badChkpt := &Checkpoint{
+		SequenceNumber: 10,
+		Id:             base64.StdEncoding.EncodeToString([]byte("WRONG")),
+		ReplicaId:      0,
+	}
+	instance.chkpts[seqNo] = badChkpt.Id // This is done via the exec path, shortcut it here
+	events.SendEvent(instance, badChkpt)
+
+	for i := uint64(1); i <= 3; i++ {
+		events.SendEvent(instance, &Checkpoint{
+			SequenceNumber: 10,
+			Id:             base64.StdEncoding.EncodeToString([]byte("CORRECT")),
+			ReplicaId:      i,
+		})
+	}
+
+	if instance.h != 10 {
+		t.Fatalf("Replica should have moved its watermarks but did not")
+	}
+
+	if !instance.skipInProgress {
+		t.Fatalf("Replica should be attempting state transfer")
+	}
+
+	if !invalidated || !skipped {
+		t.Fatalf("Replica should have invalidated its state and skipped")
 	}
 }

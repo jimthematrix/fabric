@@ -24,6 +24,7 @@ import (
 	"io/ioutil"
 	"net"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"runtime"
 	"strconv"
@@ -34,7 +35,7 @@ import (
 
 	"golang.org/x/net/context"
 
-	google_protobuf "google/protobuf"
+	"google/protobuf"
 
 	"github.com/howeyc/gopass"
 	"github.com/op/go-logging"
@@ -183,6 +184,7 @@ var (
 	chaincodeQueryRaw       bool
 	chaincodeQueryHex       bool
 	chaincodeAttributesJSON string
+	customIDGenAlg          string
 )
 
 var chaincodeCmd = &cobra.Command{
@@ -238,6 +240,8 @@ func main() {
 	mainFlags := mainCmd.PersistentFlags()
 	mainFlags.String("logging-level", "", "Default logging level and overrides, see core.yaml for full syntax")
 	viper.BindPFlag("logging_level", mainFlags.Lookup("logging-level"))
+	testCoverProfile := ""
+	mainFlags.StringVarP(&testCoverProfile, "test.coverprofile", "", "coverage.cov", "Done")
 
 	// Set the flags on the node start command.
 	flags := nodeStartCmd.Flags()
@@ -249,11 +253,11 @@ func main() {
 
 	flags.BoolVarP(&chaincodeDevMode, "peer-chaincodedev", "", false, "Whether peer in chaincode development mode")
 
-	viper.BindPFlag("peer_tls_enabled", flags.Lookup("peer-tls-enabled"))
-	viper.BindPFlag("peer_tls_cert_file", flags.Lookup("peer-tls-cert-file"))
-	viper.BindPFlag("peer_tls_key_file", flags.Lookup("peer-tls-key-file"))
-	viper.BindPFlag("peer_gomaxprocs", flags.Lookup("peer-gomaxprocs"))
-	viper.BindPFlag("peer_discovery_enabled", flags.Lookup("peer-discovery-enabled"))
+	viper.BindPFlag("peer.tls.enabled", flags.Lookup("peer-tls-enabled"))
+	viper.BindPFlag("peer.tls.cert.file", flags.Lookup("peer-tls-cert-file"))
+	viper.BindPFlag("peer.tls.key.file", flags.Lookup("peer-tls-key-file"))
+	viper.BindPFlag("peer.gomaxprocs", flags.Lookup("peer-gomaxprocs"))
+	viper.BindPFlag("peer.discovery.enabled", flags.Lookup("peer-discovery-enabled"))
 
 	flags.String("transactions-queue", "", "Optional external queue for asynchronously submission transactions")
 	viper.BindPFlag("transactions-queue", flags.Lookup("transactions-queue"))
@@ -301,6 +305,7 @@ func main() {
 	chaincodeCmd.PersistentFlags().StringVarP(&chaincodePath, "path", "p", undefinedParamValue, fmt.Sprintf("Path to %s", chainFuncName))
 	chaincodeCmd.PersistentFlags().StringVarP(&chaincodeName, "name", "n", undefinedParamValue, fmt.Sprintf("Name of the chaincode returned by the deploy transaction"))
 	chaincodeCmd.PersistentFlags().StringVarP(&chaincodeUsr, "username", "u", undefinedParamValue, fmt.Sprintf("Username for chaincode operations when security is enabled"))
+	chaincodeCmd.PersistentFlags().StringVarP(&customIDGenAlg, "tid", "t", undefinedParamValue, fmt.Sprintf("Name of a custom ID generation algorithm (hashing and decoding) e.g. sha256base64"))
 
 	chaincodeQueryCmd.Flags().BoolVarP(&chaincodeQueryRaw, "raw", "r", false, "If true, output the query value as raw bytes, otherwise format as a printable string")
 	chaincodeQueryCmd.Flags().BoolVarP(&chaincodeQueryHex, "hex", "x", false, "If true, output the query value byte array in hexadecimal. Incompatible with --raw")
@@ -321,8 +326,9 @@ func main() {
 	// On failure Cobra prints the usage message and error string, so we only
 	// need to exit with a non-0 status
 	if mainCmd.Execute() != nil {
-		os.Exit(1)
+		//os.Exit(1)
 	}
+	logger.Info("Exiting.....")
 }
 
 func setupTransactionsQueueFlags(flags *pflag.FlagSet) {
@@ -416,20 +422,12 @@ func serve(args []string) error {
 		viper.Set("peer.validator.consensus", "noops")
 		viper.Set("chaincode.mode", chaincode.DevModeUserRunsChaincode)
 
-		// Disable validity system chaincode in dev mode. Also if security is enabled,
-		// in membersrvc.yaml, manually set pki.validity-period.update to false to prevent
-		// membersrvc from calling validity system chaincode -- though no harm otherwise
-		viper.Set("ledger.blockchain.deploy-system-chaincode", "false")
-		viper.Set("validator.validity-period.verification", "false")
 	}
 
 	if err := peer.CacheConfiguration(); err != nil {
 		return err
 	}
 
-	//register all system chaincodes. This just registers chaincodes, they must be
-	//still be deployed and launched
-	system_chaincode.RegisterSysCCs()
 	peerEndpoint, err := peer.GetPeerEndpoint()
 	if err != nil {
 		err = fmt.Errorf("Failed to get Peer Endpoint: %s", err)
@@ -545,6 +543,16 @@ func serve(args []string) error {
 	// Start the grpc server. Done in a goroutine so we can deploy the
 	// genesis block if needed.
 	serve := make(chan error)
+
+	sigs := make(chan os.Signal, 1)
+	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
+	go func() {
+		sig := <-sigs
+		fmt.Println()
+		fmt.Println(sig)
+		serve <- nil
+	}()
+
 	go func() {
 		var grpcErr error
 		if grpcErr = grpcServer.Serve(lis); grpcErr != nil {
@@ -745,7 +753,12 @@ func registerChaincodeSupport(chainname chaincode.ChainName, grpcServer *grpc.Se
 	}
 	ccStartupTimeout := time.Duration(tOut) * time.Millisecond
 
-	pb.RegisterChaincodeSupportServer(grpcServer, chaincode.NewChaincodeSupport(chainname, peer.GetPeerEndpoint, userRunsCC, ccStartupTimeout, secHelper))
+	ccSrv := chaincode.NewChaincodeSupport(chainname, peer.GetPeerEndpoint, userRunsCC, ccStartupTimeout, secHelper)
+
+	//Now that chaincode is initialized, register all system chaincodes.
+	system_chaincode.RegisterSysCCs()
+
+	pb.RegisterChaincodeSupportServer(grpcServer, ccSrv)
 }
 
 func checkChaincodeCmdParams(cmd *cobra.Command) (err error) {
@@ -992,6 +1005,9 @@ func chaincodeInvokeOrQuery(cmd *cobra.Command, args []string, invoke bool) (err
 
 	// Build the ChaincodeInvocationSpec message
 	invocation := &pb.ChaincodeInvocationSpec{ChaincodeSpec: spec}
+	if customIDGenAlg != undefinedParamValue {
+		invocation.IdGenerationAlg = customIDGenAlg
+	}
 
 	var resp *pb.Response
 	if invoke {

@@ -74,7 +74,7 @@ func (hd *HashLedgerDirectory) GetLedgerByPeerID(peerID *protos.PeerID) (peer.Bl
 
 func (hd *HashLedgerDirectory) GetPeers() (*protos.PeersMessage, error) {
 	_, network, err := hd.GetNetworkInfo()
-	return &protos.PeersMessage{network}, err
+	return &protos.PeersMessage{Peers: network}, err
 }
 
 func (hd *HashLedgerDirectory) GetPeerEndpoint() (*protos.PeerEndpoint, error) {
@@ -501,7 +501,7 @@ func (mock *MockLedger) ApplyStateDelta(id interface{}, delta *statemgmt.StateDe
 
 	d, r := binary.Uvarint(SimpleStateDeltaToBytes(delta))
 	if r <= 0 {
-		return fmt.Errorf("State delta could not be applied, was not a uint64, %x", delta)
+		return fmt.Errorf("State delta could not be applied, was not a uint64, %x", d)
 	}
 	if !delta.RollBackwards {
 		mock.state += d
@@ -551,15 +551,15 @@ func (mock *MockLedger) GetCurrentStateHash() ([]byte, error) {
 
 func (mock *MockLedger) VerifyBlockchain(start, finish uint64) (uint64, error) {
 	current := start
+
+	cb, err := mock.GetBlock(current)
+	if nil != err {
+		return current, err
+	}
+
 	for {
 		if current == finish {
-			return 0, nil
-		}
-
-		cb, err := mock.GetBlock(current)
-
-		if nil != err {
-			return current, err
+			return finish, nil
 		}
 
 		next := current
@@ -573,19 +573,20 @@ func (mock *MockLedger) VerifyBlockchain(start, finish uint64) (uint64, error) {
 		nb, err := mock.GetBlock(next)
 
 		if nil != err {
-			return current, err
+			return current, nil
 		}
 
 		nbh, err := mock.HashBlock(nb)
 
 		if nil != err {
-			return current, err
+			return current, nil
 		}
 
 		if !bytes.Equal(nbh, cb.PreviousBlockHash) {
 			return current, nil
 		}
 
+		cb = nb
 		current = next
 	}
 }
