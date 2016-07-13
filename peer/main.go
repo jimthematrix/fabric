@@ -182,6 +182,7 @@ var (
 	chaincodeQueryHex       bool
 	chaincodeAttributesJSON string
 	customIDGenAlg          string
+	oracleServiceUrl 		string
 )
 
 var chaincodeCmd = &cobra.Command{
@@ -243,6 +244,8 @@ func main() {
 	// Set the flags on the node start command.
 	flags := nodeStartCmd.Flags()
 	flags.BoolVarP(&chaincodeDevMode, "peer-chaincodedev", "", false, "Whether peer in chaincode development mode")
+	flags.StringVarP(&oracleServiceUrl, "oracle-service-url", "", "", "URL to an oracle service for external API invocations from inside Chaincodes")
+	viper.BindPFlag("oracle_service_url", flags.Lookup("oracle-service-url"))
 
 	var alternativeCfgPath = os.Getenv("PEER_CFG_PATH")
 	if alternativeCfgPath != "" {

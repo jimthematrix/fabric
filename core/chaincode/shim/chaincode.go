@@ -24,6 +24,9 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"io/ioutil"
+	"net/http"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -73,6 +76,8 @@ type ChaincodeStub struct {
 
 // Peer address derived from command line or env var
 var peerAddress string
+var devMode bool
+var oracleServiceURL string
 
 // Start is the entry point for chaincodes bootstrap. It is not an API for
 // chaincodes.
@@ -90,6 +95,8 @@ func Start(cc Chaincode) error {
 	viper.SetEnvKeyReplacer(replacer)
 
 	flag.StringVar(&peerAddress, "peer.address", "", "peer address")
+	flag.BoolVar(&devMode, "chaincodeDevMode", false, "Chaincode development mode")
+	flag.StringVar(&oracleServiceURL, "oracleServiceURL", "", "URL for the oracle service for external API invocations from inside chaincodes")
 
 	flag.Parse()
 
@@ -843,6 +850,49 @@ func (stub *ChaincodeStub) insertRowInternal(tableName string, row Row, update b
 func (stub *ChaincodeStub) SetEvent(name string, payload []byte) error {
 	stub.chaincodeEvent = &pb.ChaincodeEvent{EventName: name, Payload: payload}
 	return nil
+}
+
+// ------------- Chaincode External API Invocation ----------------------
+
+// Call an external API
+func (stub *ChaincodeStub) CallExternalAPI(urlString string, method string) (string, error) {
+	
+	_, err := url.Parse(urlString)
+	if err != nil {
+		return "", fmt.Errorf("Error parsing URL string for external API: %s. \n%s", urlString, err)
+	}
+
+	var resp *http.Response
+	var body []byte
+
+	if !devMode {
+		// construct URL to route through the oracle service if one has been configured
+		fmt.Printf("Peer node not in dev mode, external API calls should go through an oracle service\n")
+		if oracleServiceURL != "" {
+			urlString = strings.TrimSuffix(oracleServiceURL, "/") + "/?url=" + urlString
+		}
+	} else {
+		fmt.Printf("Peer node in dev mode, external API calls are invoked directly\n")
+	}
+
+	switch method {
+	case "GET":
+		resp, err = http.Get(urlString)
+		if err != nil {
+			return "", fmt.Errorf("Error invoking target URL: %s. \n%s", urlString, err)
+		}
+
+		defer resp.Body.Close()
+
+		body, err = ioutil.ReadAll(resp.Body)
+		if err != nil {
+			return "", fmt.Errorf("Error reading response body from invoking url: %s. \n%s", urlString, err)
+		}
+
+		return fmt.Sprintf("%s", body), nil
+	}
+
+	return "", fmt.Errorf("Error invoking target URL: %s. Unrecognized HTTP method: %s.", urlString, method)
 }
 
 // ------------- Logging Control and Chaincode Loggers ---------------

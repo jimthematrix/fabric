@@ -305,6 +305,13 @@ func (chaincodeSupport *ChaincodeSupport) getArgsAndEnv(cID *pb.ChaincodeID, cLa
 	default:
 		return nil, nil, fmt.Errorf("Unknown chaincodeType: %s", cLang)
 	}
+
+	// add flag to indicate to the chaincode it's being executed in development mode
+	args = append(args, fmt.Sprintf("-chaincodeDevMode=%t", false))
+
+	// add flag to indicate to the chaincode the oracle service to use for external API invocations
+	args = append(args, fmt.Sprintf("-oracleServiceURL=%s", viper.GetString("oracle_service_url")))
+
 	return args, envs, nil
 }
 
