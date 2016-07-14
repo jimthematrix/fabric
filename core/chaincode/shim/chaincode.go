@@ -869,7 +869,7 @@ func (stub *ChaincodeStub) CallExternalAPI(urlString string, method string) (str
 		// construct URL to route through the oracle service if one has been configured
 		fmt.Printf("Peer node not in dev mode, external API calls should go through an oracle service\n")
 		if oracleServiceURL != "" {
-			urlString = strings.TrimSuffix(oracleServiceURL, "/") + "/?url=" + urlString
+			urlString = fmt.Sprintf("%s/?url=%s&transactionId=%s", strings.TrimSuffix(oracleServiceURL, "/"), urlString, stub.UUID)
 		}
 	} else {
 		fmt.Printf("Peer node in dev mode, external API calls are invoked directly\n")

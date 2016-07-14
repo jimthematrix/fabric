@@ -42,6 +42,7 @@ Vagrant.configure('2') do |config|
   config.vm.synced_folder "..", "#{SRCMOUNT}"
   config.vm.synced_folder "..", "/opt/gopath/src/github.com/hyperledger/fabric"
   config.vm.synced_folder ENV.fetch('LOCALDEVDIR', ".."), "#{LOCALDEV}"
+  config.vm.synced_folder "../../chaincode", "/opt/gopath/src/github.com/hyperledger/chaincode"
 
   config.vm.provider :virtualbox do |vb|
     vb.name = "hyperledger"

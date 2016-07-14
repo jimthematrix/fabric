@@ -128,7 +128,7 @@ func (t *SimpleChaincode) Invoke(stub *shim.ChaincodeStub, function string, args
 
 	result, err1 := stub.CallExternalAPI("http://localhost:3000", "GET")
 	if err1 != nil {
-		fmt.Printf("Error calling external URL. \n%s\n", err)
+		fmt.Printf("Error calling external URL. \n%s\n", err1)
 	}
 
 	fmt.Printf("\n%s\n\n", result)
